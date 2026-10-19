@@ -4,7 +4,7 @@
 //      File: PNG.bt
 //   Authors: Meow404club (rewrite), based on the original template
 //            by Kevin O. Grover, RCS, Mister Wu
-//   Version: 3.0
+//   Version: 3.1
 //   Purpose: Parse PNG (Portable Network Graphics) and APNG (Animated PNG)
 //            files, validate the structure, and expose hidden / non-standard
 //            data (CTF forensics friendly).
@@ -12,6 +12,11 @@
 // File Mask: *.png,*.apng
 //  ID Bytes: 89 50 4E 47 0D 0A 1A 0A
 //   History:
+//   3.1   2026-10-19 Meow404club: Theme-aware colors - native dark-theme
+//         palette (ThemeIsDark + ThemeAutoScaleColors(false)) so colors no
+//         longer turn gray on 010's dark theme; whole-chunk tinting via
+//         SetBackColor (anomalous regions are highlighted in full, not just
+//         their header); dedicated teal color for tEXt/zTXt/iTXt chunks.
 //   3.0   2026-10-19 Meow404club: Full rewrite.
 //         - Fixed runtime errors: tEXt/fdAT parsers referenced an undefined
 //           `length` variable, and zTXt/iTXt were matched as "zEXt"/"iEXt"
@@ -46,29 +51,77 @@
 //   APNG 1.0  : https://wiki.mozilla.org/APNG_Specification
 //
 // Color legend (hex editor background):
-//   Lavender  = PNG signature          Green   = IHDR
-//   Blue      = PLTE palette           Orange  = IDAT image data
-//   Cyan      = APNG acTL/fcTL/fdAT    Red     = CRC mismatch
-//   Yellow    = unknown CRITICAL chunk (invalid PNG!)
-//   Magenta   = data that does NOT belong in a PNG file (hidden data!)
-//   Light gray= ancillary/metadata chunks (everything else)
+//   Dark theme                          Light theme
+//   brown-gray = signature              lavender   = signature
+//   green      = IHDR                   green      = IHDR
+//   blue       = PLTE palette           blue       = PLTE palette
+//   orange     = IDAT image data        orange     = IDAT image data
+//   violet     = APNG acTL/fcTL/fdAT    violet     = APNG chunks
+//   teal       = tEXt/zTXt/iTXt text    pale teal  = text chunks
+//   slate      = other ancillary        light gray = ancillary chunks
+//   amber      = unknown CRITICAL chunk yellow     = unknown critical chunk
+//   red        = CRC mismatch           red        = CRC mismatch
+//   MAGENTA    = data that does NOT belong in a PNG file (hidden data!)
 //------------------------------------------------
 
 BigEndian();                      // PNG is stored in network byte order
 
 // ---------------------------------------------------------------------------
-// Colors (Windows COLORREF = 0x00BBGGRR)
+// Colors (Windows COLORREF = 0x00BBGGRR).  Two palettes, picked at runtime
+// with ThemeIsDark(): the dark set is designed natively for 010's dark theme
+// (auto-scaling is disabled so the colors are used exactly as specified),
+// the light set for light themes.
+//
+//   Dark theme                          Light theme
+//   brown-gray = signature              lavender   = signature
+//   green      = IHDR                   green      = IHDR
+//   blue       = PLTE palette           blue       = PLTE palette
+//   orange     = IDAT image data        orange     = IDAT image data
+//   violet     = APNG acTL/fcTL/fdAT    violet     = APNG chunks
+//   teal       = tEXt/zTXt/iTXt text    pale teal  = text chunks
+//   slate      = other ancillary        light gray = ancillary chunks
+//   amber      = unknown CRITICAL       yellow     = unknown critical
+//   red        = CRC mismatch           red        = CRC mismatch
+//   MAGENTA    = NOT valid PNG data!    magenta    = non-PNG data (hidden!)
 // ---------------------------------------------------------------------------
-local int COL_SIG     = 0xFAD7E1; // lavender   - signature
-local int COL_IHDR    = 0xD4FFD4; // green      - image header
-local int COL_PLTE    = 0xFFEBCC; // blue       - palette
-local int COL_IDAT    = 0xC4E2FF; // orange     - image data
-local int COL_IEND    = 0xCDCDFF; // pink       - end
-local int COL_APNG    = 0xFFFFC6; // cyan       - animation chunks
-local int COL_ANC     = 0xF5F2F0; // light gray - ancillary chunks
-local int COL_UNKCRIT = 0x96FAFF; // yellow     - unknown critical chunk
-local int COL_CRCBAD  = 0x5A5AFF; // red        - CRC mismatch
-local int COL_ANOM    = 0xFF64FF; // MAGENTA    - data that is NOT valid PNG
+local int COL_SIG;
+local int COL_IHDR;
+local int COL_PLTE;
+local int COL_IDAT;
+local int COL_IEND;
+local int COL_APNG;
+local int COL_ANC;
+local int COL_TEXT;
+local int COL_UNKCRIT;
+local int COL_CRCBAD;
+local int COL_ANOM;
+
+if (ThemeIsDark()) {
+    ThemeAutoScaleColors(false);        // use the dark palette verbatim
+    COL_SIG     = 0x2D3C4B;   // muted brown-gray  RGB(75, 60, 45)
+    COL_IHDR    = 0x285418;   // deep green        RGB(24, 84, 40)
+    COL_PLTE    = 0x78401C;   // deep blue         RGB(28, 64, 120)
+    COL_IDAT    = 0x144678;   // deep orange       RGB(120, 70, 20)
+    COL_IEND    = 0x28236E;   // maroon            RGB(110, 35, 40)
+    COL_APNG    = 0x732D4B;   // violet            RGB(75, 45, 115)
+    COL_ANC     = 0x443A34;   // dark slate        RGB(52, 58, 68)
+    COL_TEXT    = 0x64550F;   // deep teal         RGB(15, 85, 100)
+    COL_UNKCRIT = 0x146E8C;   // amber             RGB(140, 110, 20)
+    COL_CRCBAD  = 0x281EA0;   // strong red        RGB(160, 30, 40)
+    COL_ANOM    = 0x8C1EAA;   // vivid magenta     RGB(170, 30, 140)
+} else {
+    COL_SIG     = 0xFAD7E1;   // lavender
+    COL_IHDR    = 0xD4FFD4;   // light green
+    COL_PLTE    = 0xFFEBCC;   // light blue
+    COL_IDAT    = 0xC4E2FF;   // light orange
+    COL_IEND    = 0xCDCDFF;   // light pink
+    COL_APNG    = 0xFAD7E6;   // light violet
+    COL_ANC     = 0xF5F2F0;   // light gray
+    COL_TEXT    = 0xF2F2D6;   // pale teal
+    COL_UNKCRIT = 0x96FAFF;   // bright yellow
+    COL_CRCBAD  = 0x5A5AFF;   // light red
+    COL_ANOM    = 0xFF64FF;   // magenta
+}
 
 // ---------------------------------------------------------------------------
 // Globals
@@ -192,6 +245,9 @@ int ChunkBgColor(uint32 t) {
         case 0x6163544C: return COL_APNG;   // 'acTL'
         case 0x6663544C: return COL_APNG;   // 'fcTL'
         case 0x66644154: return COL_APNG;   // 'fdAT'
+        case 0x74455854: return COL_TEXT;   // 'tEXt'
+        case 0x7A545854: return COL_TEXT;   // 'zTXt'
+        case 0x69545854: return COL_TEXT;   // 'iTXt'
     }
     if (t & 0x20000000) return COL_ANC;     // bit 5 of byte 0: ancillary
     return COL_UNKCRIT;                     // unknown critical = broken PNG
@@ -947,6 +1003,7 @@ string readUNKNOWN(local PNG_CHUNK_UNKNOWN &v) {
 // ---------------------------------------------------------------------------
 struct RAW_ANOMALY (int64 n, string label) {
     local int64 p0 = FTell();
+    SetBackColor(COL_ANOM);
     if (n > 0)
         ubyte data[n] <bgcolor=COL_ANOM>;
     g_anomalies++;
@@ -972,9 +1029,10 @@ typedef struct {
     // Peek at the chunk type first so the whole chunk gets one background color
     local uint32 tval = ReadUInt(start + 4);      // 4 name bytes as big-endian uint32
     local int bgc = g_suspicious ? COL_ANOM : ChunkBgColor(tval);
+    SetBackColor(bgc);   // the WHOLE chunk (header + data + crc) is tinted
 
-    uint32 length <bgcolor=bgc>;
-    CTYPE   type  <bgcolor=bgc, fgcolor=cDkBlue>;
+    uint32 length;
+    CTYPE   type  <fgcolor=cDkBlue>;
 
     local int64 dataPos = FTell();
     g_len     = length;
