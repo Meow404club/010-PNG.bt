@@ -1,0 +1,23 @@
+Template executed successfully.
+Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\11_emptylang.png'...
+==================== PNG Template Report ====================
+[1] 0x8  IHDR  len=13  CRC:ok
+  [iTXt] Key = text here
+[2] 0x21  iTXt  len=17  CRC:ok
+  [iTXt] K2 [] = 10 bytes of zlib-compressed text
+      (no printable ASCII strings in iTXt)
+[3] 0x3e  iTXt  len=17  CRC:ok
+  [tEXt]  = value with empty keyword
+[4] 0x5b  tEXt  len=25  CRC:ok
+  [zTXt] "" = 26 bytes of zlib-compressed text
+      (no printable ASCII strings in zTXt)
+[5] 0x80  zTXt  len=28  CRC:ok
+[6] 0xa8  IDAT  len=156  CRC:ok
+[7] 0x150  IEND  len=0  CRC:ok
+
+======================= PNG Summary =======================
+  Image     : 8 x 8, 8-bit, TrueColor (RGB)
+  Chunks    : 7
+  CRC32     : 0 error(s)
+  Anomalies : none (nothing before the signature or after IEND)
+=============================================================

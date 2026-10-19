@@ -73,7 +73,7 @@ local int COL_ANOM    = 0xFF64FF; // MAGENTA    - data that is NOT valid PNG
 // ---------------------------------------------------------------------------
 // Globals
 // ---------------------------------------------------------------------------
-local int    g_len        = 0;    // declared length of the chunk being parsed
+local int64  g_len        = 0;    // declared length of the chunk being parsed
 local int64  g_dataPos    = 0;    // file position of the chunk data
 local int    g_colorType  = -1;   // from IHDR (-1 = unknown)
 local uint32 g_palEntries = 0;    // from PLTE
@@ -168,6 +168,18 @@ string DetectFormat(int64 p, int64 n) {
     if (m >= 4 && b[0]=='O' && b[1]=='g' && b[2]=='g' && b[3]=='S')     return "Ogg media";
     if (m >= 3 && b[0]=='I' && b[1]=='D' && b[2]=='3')                  return "MP3 (ID3 tag)";
     return "";
+}
+
+// Make a chunk name printable for messages (control chars become '.')
+string SafeName(string s) {
+    local string r = "";
+    local int i, c;
+    for (i = 0; i < Strlen(s); i++) {
+        c = s[i] & 0xFF;
+        if (c >= 0x20 && c < 0x7F) SPrintf(r, "%s%c", r, c);
+        else SPrintf(r, "%s.", r);
+    }
+    return r;
 }
 
 // Background color for a chunk, from its 4-byte big-endian type value
@@ -347,6 +359,7 @@ string readPLTE(local PNG_CHUNK_PLTE &v) {
 
 // IDAT - compressed image data
 typedef struct {
+    local int64 declared_len = g_len;
     if (g_len > 0)
         ubyte data[g_len];
 } PNG_CHUNK_IDAT <read=readIDAT>;
@@ -359,7 +372,8 @@ string readIDAT(local PNG_CHUNK_IDAT &v) {
 
 // tRNS - transparency
 typedef struct {
-    switch (g_colorType) {
+    local int ct = g_colorType;   // frozen at parse time so read fns stay consistent
+    switch (ct) {
         case 0:  // grayscale: 2 bytes
             uint16 gray_sample;
             break;
@@ -382,13 +396,13 @@ typedef struct {
 
 string readTRNS(local PNG_CHUNK_TRNS &v) {
     local string s;
-    if (g_colorType == 0)      SPrintf(s, "fully-transparent gray sample = %d", v.gray_sample);
-    else if (g_colorType == 2) SPrintf(s, "fully-transparent RGB = (%d, %d, %d)", v.red, v.green, v.blue);
-    else if (g_colorType == 3) {
+    if (v.ct == 0)      SPrintf(s, "fully-transparent gray sample = %d", v.gray_sample);
+    else if (v.ct == 2) SPrintf(s, "fully-transparent RGB = (%d, %d, %d)", v.red, v.green, v.blue);
+    else if (v.ct == 3) {
         local int nAlpha = (g_palEntries > 0 && g_palEntries <= g_len) ? g_palEntries : g_len;
         SPrintf(s, "%d alpha values for palette indices", nAlpha);
     }
-    else                       return "INVALID tRNS for this color type";
+    else                return "INVALID tRNS for this color type";
     return s;
 }
 
@@ -445,8 +459,12 @@ string readSRGB(local PNG_CHUNK_SRGB &v) {
 // iCCP - embedded ICC profile (name\0method + zlib data)
 typedef struct {
     local int nameLen = StrnLen(g_dataPos, g_len);
-    char profile_name[nameLen > 0 ? nameLen : 0];
+    local string nameStr = "";
     local int hasProfile = (nameLen + 2 <= g_len) ? 1 : 0;
+    if (nameLen > 0) {
+        char profile_name[nameLen];
+        nameStr = ReadString(g_dataPos, nameLen);
+    }
     if (hasProfile) {
         ubyte name_null;
         PNG_COMPRESSION_METHOD compression_method;
@@ -458,35 +476,45 @@ string readICCP(local PNG_CHUNK_ICCP &v) {
     local string s;
     if (v.hasProfile)
         SPrintf(s, "ICC profile \"%s\" (%d bytes, zlib-compressed)",
-                v.profile_name, g_len - v.nameLen - 2);
+                v.nameStr, g_len - v.nameLen - 2);
     else
-        SPrintf(s, "malformed iCCP (profile name \"%s\" not terminated)", v.profile_name);
+        SPrintf(s, "malformed iCCP (profile name \"%s\" not terminated)", v.nameStr);
     return s;
 }
 
 // tEXt - uncompressed text (keyword\0text)
 typedef struct {
     local int kwLen = StrnLen(g_dataPos, g_len);
-    char keyword[kwLen > 0 ? kwLen : 0];
+    local string kwStr = "";
+    local string txtStr = "";
     local int hasText = (kwLen < g_len) ? 1 : 0;
+    if (kwLen > 0) {
+        char keyword[kwLen];
+        kwStr = ReadString(g_dataPos, kwLen);
+    }
     if (hasText) {
         ubyte keyword_null;
         char text[g_len - kwLen - 1];
+        txtStr = ReadString(g_dataPos + kwLen + 1, g_len - kwLen - 1);
     }
 } PNG_CHUNK_TEXT <read=readTEXT>;
 
 string readTEXT(local PNG_CHUNK_TEXT &v) {
     local string s;
-    if (v.hasText) SPrintf(s, "%s = %s", v.keyword, v.text);
-    else           SPrintf(s, "%s (malformed: no text after keyword)", v.keyword);
+    if (v.hasText) SPrintf(s, "%s = %s", v.kwStr, v.txtStr);
+    else           SPrintf(s, "%s (malformed: no text after keyword)", v.kwStr);
     return s;
 }
 
 // zTXt - compressed text (keyword\0method + zlib data)
 typedef struct {
     local int kwLen = StrnLen(g_dataPos, g_len);
-    char keyword[kwLen > 0 ? kwLen : 0];
+    local string kwStr = "";
     local int hasData = (kwLen + 2 <= g_len) ? 1 : 0;
+    if (kwLen > 0) {
+        char keyword[kwLen];
+        kwStr = ReadString(g_dataPos, kwLen);
+    }
     if (hasData) {
         ubyte keyword_null;
         PNG_COMPRESSION_METHOD compression_method;
@@ -497,9 +525,9 @@ typedef struct {
 string readZTXT(local PNG_CHUNK_ZTXT &v) {
     local string s;
     if (v.hasData)
-        SPrintf(s, "%s = (%d bytes zlib-compressed text)", v.keyword, g_len - v.kwLen - 2);
+        SPrintf(s, "%s = (%d bytes zlib-compressed text)", v.kwStr, g_len - v.kwLen - 2);
     else
-        SPrintf(s, "%s (malformed zTXt)", v.keyword);
+        SPrintf(s, "%s (malformed zTXt)", v.kwStr);
     return s;
 }
 
@@ -507,8 +535,15 @@ string readZTXT(local PNG_CHUNK_ZTXT &v) {
 // (keyword\0flag method\0language\0translated\0text)
 typedef struct {
     local int kwLen = StrnLen(g_dataPos, g_len);
-    char keyword[kwLen > 0 ? kwLen : 0];
+    local string kwStr = "";
+    local string langStr = "";
+    local string transStr = "";
+    local string txtStr = "";
     local int hasHeader = (g_len > kwLen + 2) ? 1 : 0;
+    if (kwLen > 0) {
+        char keyword[kwLen];
+        kwStr = ReadString(g_dataPos, kwLen);
+    }
     if (hasHeader) {
         ubyte keyword_null;
         ubyte compression_flag;  // 0 = text uncompressed, 1 = compressed
@@ -517,8 +552,11 @@ typedef struct {
     local int off  = kwLen + 3;
     local int rest = g_len - off;
     local int langLen = (rest > 0) ? StrnLen(g_dataPos + off, rest) : 0;
-    char language_tag[langLen > 0 ? langLen : 0];
     local int hasLangNul = (langLen < rest) ? 1 : 0;
+    if (langLen > 0) {
+        char language_tag[langLen];
+        langStr = ReadString(g_dataPos + off, langLen);
+    }
     local int off2   = off + langLen + 1;
     local int rest2  = g_len - off2;
     local int transLen = 0;
@@ -526,11 +564,15 @@ typedef struct {
     if (hasLangNul) {
         ubyte language_null;
         transLen = (rest2 > 0) ? StrnLen(g_dataPos + off2, rest2) : 0;
-        char translated_keyword[transLen > 0 ? transLen : 0];
+        if (transLen > 0) {
+            char translated_keyword[transLen];
+            transStr = ReadString(g_dataPos + off2, transLen);
+        }
         hasText = (transLen < rest2) ? 1 : 0;
         if (hasText) {
             ubyte translated_null;
             char text[g_len - off2 - transLen - 1];
+            txtStr = ReadString(g_dataPos + off2 + transLen + 1, g_len - off2 - transLen - 1);
         }
     }
 } PNG_CHUNK_ITXT <read=readITXT>;
@@ -538,22 +580,25 @@ typedef struct {
 string readITXT(local PNG_CHUNK_ITXT &v) {
     local string s;
     if (!v.hasHeader) {
-        SPrintf(s, "%s (malformed iTXt)", v.keyword);
+        SPrintf(s, "%s (malformed iTXt)", v.kwStr);
         return s;
     }
-    if (v.compression_flag == 0 && v.hasText)
-        SPrintf(s, "%s [%s] %s", v.keyword, v.language_tag, v.text);
-    else if (v.compression_flag == 0)
-        SPrintf(s, "%s [%s] (no text)", v.keyword, v.language_tag);
-    else
-        SPrintf(s, "%s [%s] (%d bytes compressed text)",
-                v.keyword, v.language_tag, g_len - v.off2 - v.transLen - 1);
+    if (v.compression_flag == 0 && v.hasText) {
+        if (Strlen(v.langStr) > 0) SPrintf(s, "%s [%s] %s", v.kwStr, v.langStr, v.txtStr);
+        else                       SPrintf(s, "%s %s", v.kwStr, v.txtStr);
+    } else if (v.compression_flag == 0) {
+        SPrintf(s, "%s (no text)", v.kwStr);
+    } else {
+        SPrintf(s, "%s (%d bytes compressed text)", v.kwStr,
+                g_len - v.off2 - v.transLen - 1);
+    }
     return s;
 }
 
 // bKGD - background colour
 typedef struct {
-    switch (g_colorType) {
+    local int ct = g_colorType;   // frozen at parse time so read fns stay consistent
+    switch (ct) {
         case 3:  // indexed: palette index
             ubyte palette_index;
             break;
@@ -574,17 +619,18 @@ typedef struct {
 
 string readBKGD(local PNG_CHUNK_BKGD &v) {
     local string s;
-    if (g_colorType == 3)      SPrintf(s, "background palette index = %d", v.palette_index);
-    else if (g_colorType == 0 || g_colorType == 4) SPrintf(s, "background gray = %d", v.gray);
-    else if (g_colorType == 2 || g_colorType == 6)
+    if (v.ct == 3)      SPrintf(s, "background palette index = %d", v.palette_index);
+    else if (v.ct == 0 || v.ct == 4) SPrintf(s, "background gray = %d", v.gray);
+    else if (v.ct == 2 || v.ct == 6)
         SPrintf(s, "background RGB = (%d, %d, %d)", v.red, v.green, v.blue);
-    else                       return "UNKNOWN background (IHDR not parsed yet)";
+    else                return "UNKNOWN background (IHDR not parsed yet)";
     return s;
 }
 
 // sBIT - significant bits
 typedef struct {
-    switch (g_colorType) {
+    local int ct = g_colorType;   // frozen at parse time so read fns stay consistent
+    switch (ct) {
         case 0:
             ubyte gray_bits;
             break;
@@ -617,12 +663,12 @@ typedef struct {
 
 string readSBIT(local PNG_CHUNK_SBIT &v) {
     local string s = "significant bits: ";
-    if (g_colorType == 0)      SPrintf(s, "%sgray=%d", s, v.gray_bits);
-    else if (g_colorType == 3) SPrintf(s, "%sR=%d G=%d B=%d", s, v.red_bits, v.green_bits, v.blue_bits);
-    else if (g_colorType == 4) SPrintf(s, "%sgray=%d alpha=%d", s, v.gray_bits, v.alpha_bits);
-    else if (g_colorType == 2) SPrintf(s, "%sR=%d G=%d B=%d", s, v.red_bits, v.green_bits, v.blue_bits);
-    else if (g_colorType == 6) SPrintf(s, "%sR=%d G=%d B=%d A=%d", s, v.red_bits, v.green_bits, v.blue_bits, v.alpha_bits);
-    else                       return "UNKNOWN sBIT (IHDR not parsed yet)";
+    if (v.ct == 0)      SPrintf(s, "%sgray=%d", s, v.gray_bits);
+    else if (v.ct == 3) SPrintf(s, "%sR=%d G=%d B=%d", s, v.red_bits, v.green_bits, v.blue_bits);
+    else if (v.ct == 4) SPrintf(s, "%sgray=%d alpha=%d", s, v.gray_bits, v.alpha_bits);
+    else if (v.ct == 2) SPrintf(s, "%sR=%d G=%d B=%d", s, v.red_bits, v.green_bits, v.blue_bits);
+    else if (v.ct == 6) SPrintf(s, "%sR=%d G=%d B=%d A=%d", s, v.red_bits, v.green_bits, v.blue_bits, v.alpha_bits);
+    else                return "UNKNOWN sBIT (IHDR not parsed yet)";
     return s;
 }
 
@@ -648,8 +694,12 @@ string readPHYS(local PNG_CHUNK_PHYS &v) {
 // sPLT - suggested palette (name\0depth + entries)
 typedef struct {
     local int nameLen = StrnLen(g_dataPos, g_len);
-    char palette_name[nameLen > 0 ? nameLen : 0];
+    local string nameStr = "";
     local int hasEntries = (nameLen + 2 <= g_len) ? 1 : 0;
+    if (nameLen > 0) {
+        char palette_name[nameLen];
+        nameStr = ReadString(g_dataPos, nameLen);
+    }
     local int depth = 0;
     if (hasEntries) {
         ubyte name_null;
@@ -667,7 +717,7 @@ typedef struct {
 
 string readSPLT(local PNG_CHUNK_SPLT &v) {
     local string s;
-    SPrintf(s, "palette \"%s\", %d-bit, %d entries", v.palette_name, v.depth, v.entries);
+    SPrintf(s, "palette \"%s\", %d-bit, %d entries", v.nameStr, v.depth, v.entries);
     return s;
 }
 
@@ -703,6 +753,7 @@ string readTIME(local PNG_CHUNK_TIME &v) {
 
 // eXIf - Exif/TIFF metadata (PNG third edition)
 typedef struct {
+    local int64 declared_len = g_len;
     if (g_len > 0)
         ubyte exif_data[g_len];
 } PNG_CHUNK_EXIF <read=readEXIF>;
@@ -734,11 +785,18 @@ typedef struct {
         ubyte unit;
     local int rest = g_len - 1;
     local int wLen = (rest > 0) ? StrnLen(g_dataPos + 1, rest) : 0;
-    char pixel_width[wLen > 0 ? wLen : 0];
+    local string wStr = "";
+    local string hStr = "";
+    if (wLen > 0) {
+        char pixel_width[wLen];
+        wStr = ReadString(g_dataPos + 1, wLen);
+    }
     local int hasHeight = (wLen < rest) ? 1 : 0;
     if (hasHeight) {
         ubyte width_null;
         char pixel_height[rest - wLen - 1];
+        if (rest - wLen - 1 > 0)
+            hStr = ReadString(g_dataPos + 2 + wLen, rest - wLen - 1);
     }
 } PNG_CHUNK_SCAL <read=readSCAL>;
 
@@ -746,7 +804,7 @@ string readSCAL(local PNG_CHUNK_SCAL &v) {
     local string s;
     if (v.hasHeight)
         SPrintf(s, "unit = %s; %s pixels wide, %s pixels high",
-                v.unitVal == 1 ? "radian" : "meter", v.pixel_width, v.pixel_height);
+                v.unitVal == 1 ? "radian" : "meter", v.wStr, v.hStr);
     else
         SPrintf(s, "unit = %s (malformed)", v.unitVal == 1 ? "radian" : "meter");
     return s;
@@ -872,6 +930,7 @@ string readFDAT(local PNG_CHUNK_FDAT &v) {
 
 // Anything else - raw bytes (we still scan it for hidden text)
 typedef struct {
+    local int64 declared_len = g_len;
     if (g_len > 0)
         ubyte data[g_len];
 } PNG_CHUNK_UNKNOWN <read=readUNKNOWN>;
@@ -929,6 +988,8 @@ typedef struct {
 
     // --- dispatch on the chunk name ------------------------------------
     local string cname = type.cname;
+    local string safe = SafeName(cname);          // printable version for messages
+    local int64 lenFull = length;                 // declared length as signed 64-bit
     if (cname == "IDAT") {
         PNG_CHUNK_IDAT idat;
         if (!g_sawIHDR)
@@ -1036,7 +1097,7 @@ typedef struct {
         PNG_CHUNK_ICCP iccp;
         if (iccp.hasProfile) {
             Printf("  [iCCP] ICC profile \"%s\" (%d bytes compressed)\n",
-                   iccp.profile_name, length - iccp.nameLen - 2);
+                   iccp.nameStr, length - iccp.nameLen - 2);
             PrintStringsAt(g_dataPos + iccp.nameLen + 2, length - iccp.nameLen - 2, "iCCP");
         } else {
             Printf("!!! WARNING: malformed iCCP chunk (%d bytes)\n", length);
@@ -1045,7 +1106,7 @@ typedef struct {
     else if (cname == "tEXt") {
         PNG_CHUNK_TEXT text;
         if (text.hasText)
-            Printf("  [tEXt] %s = %s\n", text.keyword, text.text);
+            Printf("  [tEXt] %s = %s\n", text.kwStr, text.txtStr);
         else
             Printf("!!! WARNING: tEXt chunk has keyword but no text (%d bytes)\n", length);
     }
@@ -1053,7 +1114,7 @@ typedef struct {
         PNG_CHUNK_ZTXT ztxt;
         if (ztxt.hasData) {
             Printf("  [zTXt] \"%s\" = %d bytes of zlib-compressed text\n",
-                   ztxt.keyword, length - ztxt.kwLen - 2);
+                   ztxt.kwStr, length - ztxt.kwLen - 2);
             // plaintext appended after the zlib stream is a classic hiding spot
             PrintStringsAt(g_dataPos + ztxt.kwLen + 2, length - ztxt.kwLen - 2, "zTXt");
         } else {
@@ -1065,12 +1126,15 @@ typedef struct {
         if (!itxt.hasHeader) {
             Printf("!!! WARNING: malformed iTXt chunk (%d bytes)\n", length);
         } else if (itxt.compression_flag == 0 && itxt.hasText) {
-            Printf("  [iTXt] %s [%s] = %s\n", itxt.keyword, itxt.language_tag, itxt.text);
+            if (Strlen(itxt.langStr) > 0)
+                Printf("  [iTXt] %s [%s] = %s\n", itxt.kwStr, itxt.langStr, itxt.txtStr);
+            else
+                Printf("  [iTXt] %s = %s\n", itxt.kwStr, itxt.txtStr);
         } else if (itxt.compression_flag == 0) {
-            Printf("  [iTXt] %s [%s] (no text)\n", itxt.keyword, itxt.language_tag);
+            Printf("  [iTXt] %s (no text)\n", itxt.kwStr);
         } else {
-            Printf("  [iTXt] %s [%s] = %d bytes of zlib-compressed text\n",
-                   itxt.keyword, itxt.language_tag,
+            Printf("  [iTXt] %s [%s] = %Ld bytes of zlib-compressed text\n",
+                   itxt.kwStr, itxt.langStr,
                    length - itxt.off2 - itxt.transLen - 1);
             PrintStringsAt(g_dataPos + itxt.off2 + itxt.transLen + 1,
                            length - itxt.off2 - itxt.transLen - 1, "iTXt");
@@ -1119,7 +1183,7 @@ typedef struct {
     else if (cname == "sPLT") {
         PNG_CHUNK_SPLT splt;
         Printf("  [sPLT] palette \"%s\" (%d-bit, %d entries)\n",
-               splt.palette_name, splt.sample_depth, splt.entries);
+               splt.nameStr, splt.depth, splt.entries);
     }
     else if (cname == "hIST") {
         PNG_CHUNK_HIST hist;
@@ -1234,17 +1298,17 @@ typedef struct {
         // prime real estate for hidden data - dump any strings found.
         PNG_CHUNK_UNKNOWN unknown;
         if (!(tval & 0x20000000))
-            Printf("!!! ERROR: unknown CRITICAL chunk \"%s\" - not a valid PNG!\n", cname);
+            Printf("!!! ERROR: unknown CRITICAL chunk \"%s\" - not a valid PNG!\n", safe);
         else
-            Printf("  [????] unknown ancillary chunk \"%s\", %d bytes\n", cname, length);
-        if (length > 0)
-            PrintStringsAt(g_dataPos, g_len, cname);
+            Printf("  [????] unknown ancillary chunk \"%s\", %d bytes\n", safe, length);
+        if (length > 0 && !g_suspicious)
+            PrintStringsAt(g_dataPos, g_len, safe);
     }
 
     // Chunks are not allowed between two IDATs (APNG fcTL/fdAT excepted)
     if (g_sawIDAT && cname != "IDAT" && cname != "IEND" &&
         cname != "fcTL" && cname != "fdAT" && !g_idatGapReported) {
-        Printf("!!! ERROR: chunk \"%s\" appears between IDAT chunks\n", cname);
+        Printf("!!! ERROR: chunk \"%s\" appears between IDAT chunks\n", safe);
         g_idatGapReported = 1;
     }
 
@@ -1252,40 +1316,48 @@ typedef struct {
     local int64 afterData = FTell();
     if (afterData != dataPos + g_len) {
         // a sub-parser miscounted (malformed chunk) - resynchronize
-        Printf("!!! WARNING: parser consumed %d bytes of chunk \"%s\" but its length is %d, resyncing\n",
-               afterData - dataPos, cname, g_len);
+        Printf("!!! WARNING: parser consumed %Ld bytes of chunk \"%s\" but its length is %Ld, resyncing\n",
+               afterData - dataPos, safe, g_len);
         FSeek(dataPos + g_len);
     }
 
     local int crcOk = -1;      // -1 = not verified (truncated), 0 = bad, 1 = ok
     if (truncated) {
-        g_crcErrors++;
-        Printf("!!! ERROR: file truncated inside chunk \"%s\": declared %d bytes, only %d present\n",
-               cname, length, g_len);
+        crcOk = -1;
+        if (!g_suspicious) {
+            g_crcErrors++;
+            Printf("!!! ERROR: file truncated inside chunk \"%s\": declared %Ld bytes, only %Ld present\n",
+                   safe, lenFull, g_len);
+        }
     } else if (FileSize() - FTell() >= 4) {
         local uint32 crcStored = ReadUInt(FTell());
         crcOk = (crcStored == Checksum(CHECKSUM_CRC32, start + 4, 4 + g_len)) ? 1 : 0;
         uint32 crc <format=hex, bgcolor=(crcOk ? bgc : COL_CRCBAD)>;
-        if (!crcOk) {
+        if (!crcOk && !g_suspicious) {
             g_crcErrors++;
             Printf("!!! ERROR: CRC mismatch in chunk \"%s\" (#%d): stored %08X, calculated %08X\n",
-                   cname, g_chunkCount + 1, crcStored,
+                   safe, g_chunkCount + 1, crcStored,
                    Checksum(CHECKSUM_CRC32, start + 4, 4 + g_len));
         }
     } else {
-        g_crcErrors++;
         crcOk = -1;
-        Printf("!!! ERROR: chunk \"%s\" is missing its CRC (file truncated)\n", cname);
+        if (!g_suspicious) {
+            g_crcErrors++;
+            Printf("!!! ERROR: chunk \"%s\" is missing its CRC (file truncated)\n", safe);
+        }
     }
 
     if (g_suspicious) {
+        // Anything after IEND is not a real chunk - scan the WHOLE region
+        // (including the 8 header bytes) for hidden text.
         g_anomalies++;
-        Printf("!!! ANOMALY: chunk \"%s\" appears AFTER IEND - data is hidden here\n", cname);
+        Printf("!!! ANOMALY: chunk \"%s\" appears AFTER IEND - data is hidden here\n", safe);
+        PrintStringsAt(start, FTell() - start, safe);
     }
 
     // one-line report per chunk
-    Printf("[%d] 0x%Lx  %s  len=%d  CRC:%s%s\n",
-           g_chunkCount + 1, start, cname, length,
+    Printf("[%d] 0x%Lx  %s  len=%Ld  CRC:%s%s\n",
+           g_chunkCount + 1, start, safe, lenFull,
            (crcOk == -1) ? "n/a" : (crcOk ? "ok" : "BAD"),
            g_suspicious ? "  <-- AFTER IEND" : "");
 
@@ -1294,7 +1366,7 @@ typedef struct {
 
 string readCHUNK(local PNG_CHUNK &c) {
     local string s;
-    SPrintf(s, "%s", c.type.cname);
+    SPrintf(s, "%s", SafeName(c.type.cname));
     s += " (";
     s += (c.type.cname[0] & 0x20) ? "ancillary" : "critical";
     s += (c.type.cname[1] & 0x20) ? ", private" : ", public";
@@ -1349,6 +1421,7 @@ PNG_SIGNATURE sig <bgcolor=COL_SIG>;
 
 // Chunk loop
 local int64 rem = 0;
+local string fmtGuess = "";
 while (!FEof()) {
     rem = FileSize() - FTell();
     if (rem < 12) {
@@ -1361,7 +1434,17 @@ while (!FEof()) {
         break;
     }
     g_suspicious = g_sawIEND;   // any chunk after IEND is suspicious
-    PNG_CHUNK chunk;
+    fmtGuess = "";
+    if (g_suspicious) {
+        // If the trailing data starts with a known file signature (e.g. another
+        // PNG or a ZIP), report it as a whole instead of parsing it as chunks.
+        fmtGuess = DetectFormat(FTell(), rem);
+    }
+    if (fmtGuess == "") {
+        PNG_CHUNK chunk;
+    } else {
+        RAW_ANOMALY embedded(rem, "Embedded file after IEND - " + fmtGuess);
+    }
 }
 
 // ---------------------------------------------------------------------------

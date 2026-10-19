@@ -1,6 +1,3 @@
-Executing template 'C:\Users\lyubi\Documents\SweetScape\010 Templates\Repository\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\8_tailjunk.png'...
-*ERROR Line 332: Template passed end of file at variable 'data'. 
-Executing script 'D:\workspace\010-PNG.bt\test_png.1sc' on 'D:\workspace\010-PNG.bt\testfiles\8_tailjunk.png'...
 Template executed successfully.
 Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\8_tailjunk.png'...
 ==================== PNG Template Report ====================
@@ -8,16 +5,16 @@ Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\
 [2] 0x21  IDAT  len=156  CRC:ok
 [3] 0xc9  IEND  len=0  CRC:ok
 !!! ERROR: unknown CRITICAL chunk "" - not a valid PNG!
-      ASCII strings in :
-        "abchidden-raw-tail-text!!"  @ 0xdd (25 chars)
 !!! ERROR: chunk "" appears between IDAT chunks
-!!! ERROR: file truncated inside chunk "": declared 1718378855 bytes, only 25 present
 !!! ANOMALY: chunk "" appears AFTER IEND - data is hidden here
+      ASCII strings in :
+        "flag"  @ 0xd5 (4 chars)
+        "abchidden-raw-tail-text!!"  @ 0xdd (25 chars)
 [4] 0xd5    len=1718378855  CRC:n/a  <-- AFTER IEND
 
 ======================= PNG Summary =======================
   Image     : 8 x 8, 8-bit, TrueColor (RGB)
   Chunks    : 4
-  CRC32     : 1 error(s)
+  CRC32     : 0 error(s)
   ANOMALIES : 1 region(s) of non-PNG data (magenta) - hidden data likely!
 =============================================================

@@ -104,6 +104,27 @@ with open(f"{OUT}/8_tailjunk.png", "wb") as f:
     f.write(SIG + ihdr(8, 8) + idat_rgb(8, 8) + chunk(b"IEND")
             + b"flag" + b"\x00\x00\x00\x08abc" + b"hidden-raw-tail-text!!")
 
+# 9. plain flag text appended directly after IEND (misc5 style)
+with open(f"{OUT}/9_flagtext.png", "wb") as f:
+    f.write(SIG + ihdr(8, 8) + idat_rgb(8, 8) + chunk(b"IEND")
+            + b"flag{2a476b4011805f1a8e4b906c8f84083e}")
+
+# 10. a complete second PNG embedded after IEND (misc8 style)
+second = SIG + ihdr(4, 4) + idat_rgb(4, 4) + chunk(b"IEND")
+with open(f"{OUT}/10_embedded.png", "wb") as f:
+    f.write(SIG + ihdr(8, 8) + idat_rgb(8, 8) + chunk(b"IEND") + second)
+
+# 11. iTXt with empty language tag + empty translated keyword, tEXt with
+#     empty keyword (zero-size array edge cases, misc9 style)
+with open(f"{OUT}/11_emptylang.png", "wb") as f:
+    f.write(SIG + ihdr(8, 8)
+        + chunk(b"iTXt", b"Key\x00\x00\x00\x00\x00text here")          # lang="" translated=""
+        + chunk(b"iTXt", b"K2\x00\x01\x00\x00\x00" + zlib.compress(b"zz"))  # compressed, lang="" translated=""
+        + chunk(b"tEXt", b"\x00value with empty keyword")
+        + chunk(b"zTXt", b"\x00\x00" + zlib.compress(b"empty keyword ztxt"))
+        + idat_rgb(8, 8)
+        + chunk(b"IEND"))
+
 print("written to", OUT)
 for name in sorted(os.listdir(OUT)):
     print(" ", name, os.path.getsize(os.path.join(OUT, name)), "bytes")

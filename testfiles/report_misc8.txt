@@ -1,0 +1,40 @@
+Template executed successfully.
+Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\ctf\work\misc8.png'...
+==================== PNG Template Report ====================
+[1] 0x8  IHDR  len=13  CRC:ok
+[2] 0x21  sRGB  len=1  CRC:ok
+[3] 0x2e  gAMA  len=4  CRC:ok
+[4] 0x3e  pHYs  len=9  CRC:ok
+[5] 0x53  IDAT  len=3785  CRC:ok
+[6] 0xf28  IEND  len=0  CRC:ok
+!!! ANOMALY: Embedded file after IEND - another PNG image - 7741 byte(s) at offset 0xf34, this is NOT valid PNG data
+      Recognized as: another PNG image
+      Hex head: 89 50 4E 47 0D 0A 1A 0A 00 00 00 0D 49 48 44 52 00 00 03 84 00 00 00 96 08 02 00 00 00 09 DA D1 
+      ASCII strings in Embedded file after IEND - another PNG image:
+        "IHDR"  @ 0xf40 (4 chars)
+        "pHYs"  @ 0xf59 (4 chars)
+        "IDATx"  @ 0xf6e (5 chars)
+        "f`=h"  @ 0xf9d (4 chars)
+        "3&VJ"  @ 0x11af (4 chars)
+        "Xlll<"  @ 0x11b7 (5 chars)
+        "s[[["  @ 0x11be (4 chars)
+        "<lll"  @ 0x11fd (4 chars)
+        "CY\K*1"  @ 0x1289 (6 chars)
+        "hGGGF"  @ 0x12f4 (5 chars)
+        "tmgg"  @ 0x136c (4 chars)
+        "IYN3A"  @ 0x1379 (5 chars)
+        "6TTQy"  @ 0x137f (5 chars)
+        "X\:K"  @ 0x138f (4 chars)
+        "#yaO"  @ 0x13ee (4 chars)
+        "o0*G"  @ 0x1492 (4 chars)
+        "k->dO."  @ 0x14ba (6 chars)
+        "ZPC_"  @ 0x14dd (4 chars)
+        "ZPW *w"  @ 0x1576 (6 chars)
+        "-T9Xe"  @ 0x15aa (5 chars)
+
+======================= PNG Summary =======================
+  Image     : 900 x 150, 8-bit, TrueColor+Alpha (RGBA)
+  Chunks    : 6
+  CRC32     : 0 error(s)
+  ANOMALIES : 1 region(s) of non-PNG data (magenta) - hidden data likely!
+=============================================================
