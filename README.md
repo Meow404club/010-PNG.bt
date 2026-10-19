@@ -79,4 +79,8 @@ run_all.bat
 
 ## 许可
 
-模板以原版(SweetScape Repository)相同的精神开源发布;修改部分由 Meow404club 完成。
+本项目以 [MIT License](LICENSE) 发布。
+
+已确认 010 Editor / SweetScape 对模板没有任何专有许可要求(仓库提交条款只要求标准头部元数据,不含版权或许可限制),可自由使用、修改、再分发。
+
+本模板为完全重写,不构成对旧版的衍生;仅在致谢中提及原版作者(Kevin O. Grover、RCS、Mister Wu),见 `PNG.bt` 文件头。
