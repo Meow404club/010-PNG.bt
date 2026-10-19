@@ -1,0 +1,18 @@
+Executing script 'D:\workspace\010-PNG.bt\test_png.1sc' on 'D:\workspace\010-PNG.bt\testfiles\4_prepended.png'...
+Template executed successfully.
+Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\4_prepended.png'...
+==================== PNG Template Report ====================
+!!! ANOMALY: Data hidden BEFORE the PNG signature - 49 byte(s) at offset 0x0, this is NOT valid PNG data
+      Hex head: 74 68 69 73 20 66 69 6C 65 20 69 73 20 64 65 66 69 6E 69 74 65 6C 79 20 6E 6F 74 20 61 20 47 49 
+      ASCII strings in Data hidden BEFORE the PNG signature:
+        "this file is definitely not a GIF89a... or is it?"  @ 0x0 (49 chars)
+[1] 0x39  IHDR  len=13  CRC:ok
+[2] 0x52  IDAT  len=156  CRC:ok
+[3] 0xfa  IEND  len=0  CRC:ok
+
+======================= PNG Summary =======================
+  Image     : 8 x 8, 8-bit, TrueColor (RGB)
+  Chunks    : 3
+  CRC32     : 0 error(s)
+  ANOMALIES : 1 region(s) of non-PNG data (magenta) - hidden data likely!
+=============================================================

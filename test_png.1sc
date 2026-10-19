@@ -1,0 +1,4 @@
+// Test harness: run PNG.bt on the open file, dump the report, exit 42 on success
+RunTemplate("D:/workspace/010-PNG.bt/PNG.bt");
+OutputPaneSave("D:/workspace/010-PNG.bt/testfiles/report.txt");
+Exit(42);

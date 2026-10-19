@@ -1,0 +1,24 @@
+Executing template 'C:\Users\lyubi\Documents\SweetScape\010 Templates\Repository\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\6_badcrc.png'...
+*ERROR: CRC Mismatch @ chunk[1]; in data: c4c3e57a; expected: 1a6e5b95
+Executing script 'D:\workspace\010-PNG.bt\test_png.1sc' on 'D:\workspace\010-PNG.bt\testfiles\6_badcrc.png'...
+Template executed successfully.
+Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\6_badcrc.png'...
+==================== PNG Template Report ====================
+[1] 0x8  IHDR  len=13  CRC:ok
+  [tEXt] Note = this chunk has a broken CRC
+!!! ERROR: CRC mismatch in chunk "tEXt" (#2): stored C4C3E57A, calculated 1A6E5B95
+[2] 0x21  tEXt  len=32  CRC:BAD
+[3] 0x4d  IDAT  len=156  CRC:ok
+  [????] unknown ancillary chunk "crXt", 43 bytes
+      ASCII strings in crXt:
+        "private data with flag{custom_chunk_secret}"  @ 0xfd (43 chars)
+!!! ERROR: chunk "crXt" appears between IDAT chunks
+[4] 0xf5  crXt  len=43  CRC:ok
+[5] 0x12c  IEND  len=0  CRC:ok
+
+======================= PNG Summary =======================
+  Image     : 8 x 8, 8-bit, TrueColor (RGB)
+  Chunks    : 5
+  CRC32     : 1 error(s)
+  Anomalies : none (nothing before the signature or after IEND)
+=============================================================

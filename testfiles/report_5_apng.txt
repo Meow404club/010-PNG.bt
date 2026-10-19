@@ -1,0 +1,21 @@
+Executing template 'C:\Users\lyubi\Documents\SweetScape\010 Templates\Repository\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\5_apng.png'...
+Template executed successfully.
+Executing script 'D:\workspace\010-PNG.bt\test_png.1sc' on 'D:\workspace\010-PNG.bt\testfiles\5_apng.png'...
+Template executed successfully.
+Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\5_apng.png'...
+==================== PNG Template Report ====================
+[1] 0x8  IHDR  len=13  CRC:ok
+[2] 0x21  acTL  len=8  CRC:ok
+[3] 0x35  fcTL  len=26  CRC:ok
+[4] 0x5b  IDAT  len=156  CRC:ok
+[5] 0x103  fcTL  len=26  CRC:ok
+[6] 0x129  fdAT  len=15  CRC:ok
+[7] 0x144  IEND  len=0  CRC:ok
+
+======================= PNG Summary =======================
+  Image     : 8 x 8, 8-bit, TrueColor (RGB)
+  Chunks    : 7
+  CRC32     : 0 error(s)
+  Animation : 2 frames declared, 2 parsed, plays=infinite, total 550 ms
+  Anomalies : none (nothing before the signature or after IEND)
+=============================================================

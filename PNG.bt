@@ -1,0 +1,1395 @@
+//------------------------------------------------
+//--- 010 Editor Binary Template
+//
+//      File: PNG.bt
+//   Authors: Meow404club (rewrite), based on the original template
+//            by Kevin O. Grover, RCS, Mister Wu
+//   Version: 3.0
+//   Purpose: Parse PNG (Portable Network Graphics) and APNG (Animated PNG)
+//            files, validate the structure, and expose hidden / non-standard
+//            data (CTF forensics friendly).
+//  Category: Image
+// File Mask: *.png,*.apng
+//  ID Bytes: 89 50 4E 47 0D 0A 1A 0A
+//   History:
+//   3.0   2026-10-19 Meow404club: Full rewrite.
+//         - Fixed runtime errors: tEXt/fdAT parsers referenced an undefined
+//           `length` variable, and zTXt/iTXt were matched as "zEXt"/"iEXt"
+//           so they never parsed. Every parser now gets an explicit length.
+//         - New color scheme: one soft pastel background per chunk family
+//           (IHDR green / PLTE blue / IDAT orange / APNG cyan / ancillary
+//           gray), bad CRC in red, and eye-catching MAGENTA for anything
+//           that should not exist inside a PNG file.
+//         - CTF helpers: data before the signature, data after IEND, chunks
+//           after IEND, truncated tails and unknown chunks are highlighted
+//           and their printable text is dumped to the Output panel.
+//         - Full chunk support: IHDR PLTE IDAT IEND tRNS gAMA cHRM sRGB
+//           iCCP tEXt zTXt iTXt bKGD sBIT pHYs sPLT hIST tIME eXIf oFFs
+//           sCAL cICP mDCv cLLi caNv acTL fcTL fdAT.
+//         - Structural validation: IHDR first / IEND last, bit-depth vs
+//           color-type table, fixed chunk lengths, PLTE/tRNS/hIST/bKGD
+//           ordering, no chunks between IDATs, APNG sequence numbers,
+//           CRC32 of every chunk.
+//         - Robust against truncated / malformed files (bounds-clamped
+//           reads and chunk resync - no more read-past-end errors).
+//
+//   2.3   2018-08-17 K. Grover: Uniform type names.  Formatting/comments.
+//   2.2   2017-10-20 Mister Wu: Initial support of APNG chunks.
+//   2.1   2017-08-31 K. Grover: Better colors.  Alternate chunk colors.
+//   2.0   2016-02-10 SweetScape: Merged in extra chunks from PNG12Template.bt.
+//   1.1   2009-02-23 K. Grover: Decode IHDR and tEXt chunks.
+//   1.0   2005-05-11 K. Grover: Initial version.
+//
+// Specifications:
+//   PNG 1.2   : http://www.libpng.org/pub/png/spec/1.2/
+//   PNG-3     : ISO 17442:2022
+//   APNG 1.0  : https://wiki.mozilla.org/APNG_Specification
+//
+// Color legend (hex editor background):
+//   Lavender  = PNG signature          Green   = IHDR
+//   Blue      = PLTE palette           Orange  = IDAT image data
+//   Cyan      = APNG acTL/fcTL/fdAT    Red     = CRC mismatch
+//   Yellow    = unknown CRITICAL chunk (invalid PNG!)
+//   Magenta   = data that does NOT belong in a PNG file (hidden data!)
+//   Light gray= ancillary/metadata chunks (everything else)
+//------------------------------------------------
+
+BigEndian();                      // PNG is stored in network byte order
+
+// ---------------------------------------------------------------------------
+// Colors (Windows COLORREF = 0x00BBGGRR)
+// ---------------------------------------------------------------------------
+local int COL_SIG     = 0xFAD7E1; // lavender   - signature
+local int COL_IHDR    = 0xD4FFD4; // green      - image header
+local int COL_PLTE    = 0xFFEBCC; // blue       - palette
+local int COL_IDAT    = 0xC4E2FF; // orange     - image data
+local int COL_IEND    = 0xCDCDFF; // pink       - end
+local int COL_APNG    = 0xFFFFC6; // cyan       - animation chunks
+local int COL_ANC     = 0xF5F2F0; // light gray - ancillary chunks
+local int COL_UNKCRIT = 0x96FAFF; // yellow     - unknown critical chunk
+local int COL_CRCBAD  = 0x5A5AFF; // red        - CRC mismatch
+local int COL_ANOM    = 0xFF64FF; // MAGENTA    - data that is NOT valid PNG
+
+// ---------------------------------------------------------------------------
+// Globals
+// ---------------------------------------------------------------------------
+local int    g_len        = 0;    // declared length of the chunk being parsed
+local int64  g_dataPos    = 0;    // file position of the chunk data
+local int    g_colorType  = -1;   // from IHDR (-1 = unknown)
+local uint32 g_palEntries = 0;    // from PLTE
+local int    g_chunkCount = 0;
+local int    g_crcErrors  = 0;
+local int    g_anomalies  = 0;
+local int    g_sawIHDR    = 0;
+local int    g_sawPLTE    = 0;
+local int    g_sawIDAT    = 0;
+local int    g_sawIEND    = 0;
+local int    g_suspicious = 0;    // chunk located after IEND
+local int    g_idatGapReported = 0;
+local int    g_width      = 0;
+local int    g_height     = 0;
+local int    g_bitDepth   = 0;
+local int    g_interlaced = 0;
+local int    g_hasACTL    = 0;
+local uint32 g_numFrames  = 0;
+local uint32 g_numPlays   = 0;
+local int    g_framesParsed = 0;
+local double g_totalMs    = 0.0;
+local int    g_lastSeq    = -1;   // last APNG sequence number seen
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+// Length of the NUL-terminated string at 'pos', never scanning past maxLen
+int32 StrnLen(int64 pos, int32 maxLen) {
+    local int32 n = 0;
+    while (n < maxLen && ReadUByte(pos + n) != 0)
+        n++;
+    return n;
+}
+
+// Dump printable ASCII runs (>= 4 chars) found in [pos, pos+n) to the Output
+// panel. CTF challenges often hide plaintext in odd places - this finds it.
+void PrintStringsAt(int64 pos, int32 n, string label) {
+    local int32 scan = n;
+    if (scan > 0x100000) scan = 0x100000;       // cap at 1 MB
+    local int32 i, j, runStart = 0, runLen = 0, found = 0;
+    local ubyte c;
+    local string s, tmp;
+    for (i = 0; i <= scan; i++) {
+        c = (i < scan) ? ReadUByte(pos + i) : 0;
+        if (c >= 0x20 && c < 0x7F) {
+            if (runLen == 0) runStart = i;
+            runLen++;
+        } else {
+            if (runLen >= 4 && found < 20) {
+                if (found == 0)
+                    Printf("      ASCII strings in %s:\n", label);
+                s = "";
+                for (j = runStart; j < runStart + runLen && j - runStart < 200; j++) {
+                    SPrintf(tmp, "%s%c", s, ReadUByte(pos + j));
+                    s = tmp;
+                }
+                Printf("        \"%s\"  @ 0x%Lx (%d chars)\n", s, pos + runStart, runLen);
+                found++;
+            }
+            runLen = 0;
+        }
+    }
+    if (found == 0)
+        Printf("      (no printable ASCII strings in %s)\n", label);
+}
+
+// Try to recognize a non-PNG file format from its magic bytes
+string DetectFormat(int64 p, int64 n) {
+    local int i, m;
+    m = (n < 8) ? n : 8;
+    if (m <= 0) return "";
+    local ubyte b[8];
+    for (i = 0; i < m; i++) b[i] = ReadUByte(p + i);
+    if (m >= 4 && b[0]==0x50 && b[1]==0x4B && (b[2]==0x03 || b[2]==0x05 || b[2]==0x07))
+        return "ZIP archive (PK..) - extract it!";
+    if (m >= 4 && b[0]==0x52 && b[1]==0x61 && b[2]==0x72 && b[3]==0x21) return "RAR archive";
+    if (m >= 6 && b[0]==0x37 && b[1]==0x7A && b[2]==0xBC && b[3]==0xAF && b[4]==0x27 && b[5]==0x1C)
+        return "7-Zip archive";
+    if (m >= 2 && b[0]==0x1F && b[1]==0x8B)                             return "gzip data";
+    if (m >= 3 && b[0]==0x42 && b[1]==0x5A && b[2]==0x68)               return "bzip2 data";
+    if (m >= 6 && b[0]==0xFD && b[1]==0x37 && b[2]==0x7A && b[3]==0x58 && b[4]==0x5A && b[5]==0x00)
+        return "xz data";
+    if (m >= 3 && b[0]==0xFF && b[1]==0xD8 && b[2]==0xFF)               return "JPEG image";
+    if (m >= 4 && b[0]=='G' && b[1]=='I' && b[2]=='F' && b[3]=='8')     return "GIF image";
+    if (m >= 2 && b[0]=='B' && b[1]=='M')                               return "BMP image";
+    if (m >= 4 && b[0]=='R' && b[1]=='I' && b[2]=='F' && b[3]=='F')     return "RIFF (WEBP/WAV/AVI)";
+    if (m >= 4 && b[0]=='%' && b[1]=='P' && b[2]=='D' && b[3]=='F')     return "PDF document";
+    if (m >= 4 && b[0]==0x7F && b[1]=='E' && b[2]=='L' && b[3]=='F')    return "ELF binary";
+    if (m >= 2 && b[0]=='M' && b[1]=='Z')                               return "PE/EXE binary";
+    if (m >= 4 && b[0]==0x89 && b[1]=='P' && b[2]=='N' && b[3]=='G')    return "another PNG image";
+    if (m >= 4 && b[0]=='O' && b[1]=='g' && b[2]=='g' && b[3]=='S')     return "Ogg media";
+    if (m >= 3 && b[0]=='I' && b[1]=='D' && b[2]=='3')                  return "MP3 (ID3 tag)";
+    return "";
+}
+
+// Background color for a chunk, from its 4-byte big-endian type value
+int ChunkBgColor(uint32 t) {
+    switch (t) {
+        case 0x49484452: return COL_IHDR;   // 'IHDR'
+        case 0x504C5445: return COL_PLTE;   // 'PLTE'
+        case 0x49444154: return COL_IDAT;   // 'IDAT'
+        case 0x49454E44: return COL_IEND;   // 'IEND'
+        case 0x6163544C: return COL_APNG;   // 'acTL'
+        case 0x6663544C: return COL_APNG;   // 'fcTL'
+        case 0x66644154: return COL_APNG;   // 'fdAT'
+    }
+    if (t & 0x20000000) return COL_ANC;     // bit 5 of byte 0: ancillary
+    return COL_UNKCRIT;                     // unknown critical = broken PNG
+}
+
+string ColorTypeName(int t) {
+    switch (t) {
+        case 0: return "Grayscale";
+        case 2: return "TrueColor (RGB)";
+        case 3: return "Indexed (palette)";
+        case 4: return "Grayscale+Alpha";
+        case 6: return "TrueColor+Alpha (RGBA)";
+    }
+    return "UNKNOWN";
+}
+
+// Valid bit depths per color type (PNG spec)
+int ValidDepth(int ct, int d) {
+    switch (ct) {
+        case 0: return (d==1 || d==2 || d==4 || d==8 || d==16);
+        case 2: case 4: case 6: return (d==8 || d==16);
+        case 3: return (d==1 || d==2 || d==4 || d==8);
+    }
+    return 0;
+}
+
+// Report a chunk with an unexpected fixed length; it will be shown as raw data
+void LengthError(string name, int expect, int got) {
+    Printf("!!! ERROR: %s must be %d bytes (got %d) - treating as raw data\n",
+           name, expect, got);
+}
+
+// ---------------------------------------------------------------------------
+// Base types
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    ubyte bytes[8];
+} PNG_SIGNATURE <read=readSig>;
+
+string readSig(local PNG_SIGNATURE &s) {
+    return "89 50 4E 47 0D 0A 1A 0A - PNG file signature";
+}
+
+// Chunk type: shown both as hex and as its 4 characters
+typedef union {
+    uint32 cval <format=hex>;
+    char   cname[4];
+} CTYPE <read=readCTYPE>;
+
+string readCTYPE(local CTYPE &t) {
+    return t.cname;
+}
+
+typedef struct {
+    byte red   <format=hex>;
+    byte green <format=hex>;
+    byte blue  <format=hex>;
+} PNG_PALETTE_PIXEL <read=readPalPixel>;
+
+string readPalPixel(local PNG_PALETTE_PIXEL &p) {
+    local string s;
+    SPrintf(s, "rgb(%d, %d, %d)", p.red, p.green, p.blue);
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+typedef enum <byte> {
+    GRAYSCALE       = 0,
+    TRUECOLOR       = 2,
+    INDEXED         = 3,
+    GRAY_ALPHA      = 4,
+    TRUECOLOR_ALPHA = 6
+} PNG_COLOR_TYPE;
+
+typedef enum <byte> {
+    COMPRESSION_DEFLATE = 0
+} PNG_COMPRESSION_METHOD;
+
+typedef enum <byte> {
+    FILTER_ADAPTIVE = 0
+} PNG_FILTER_METHOD;
+
+typedef enum <byte> {
+    INTERLACE_NONE  = 0,
+    INTERLACE_ADAM7 = 1
+} PNG_INTERLACE_METHOD;
+
+typedef enum <byte> {
+    SRGB_PERCEPTUAL   = 0,
+    SRGB_COLORIMETRIC = 1,
+    SRGB_SATURATION   = 2,
+    SRGB_ABSOLUTE     = 3
+} PNG_SRGB_INTENT;
+
+typedef enum <byte> {
+    DISPOSE_NONE       = 0,
+    DISPOSE_BACKGROUND = 1,
+    DISPOSE_PREVIOUS   = 2
+} APNG_DISPOSE_OP;
+
+typedef enum <byte> {
+    BLEND_SOURCE = 0,
+    BLEND_OVER   = 1
+} APNG_BLEND_OP;
+
+// sPLT entries (depth 8 / 16)
+typedef struct {
+    ubyte  red;
+    ubyte  green;
+    ubyte  blue;
+    ubyte  alpha;
+    uint16 frequency;
+} SPLT_ENTRY8;
+
+typedef struct {
+    uint16 red;
+    uint16 green;
+    uint16 blue;
+    uint16 alpha;
+    uint16 frequency;
+} SPLT_ENTRY16;
+
+// ---------------------------------------------------------------------------
+// Chunk parsers.  Every parser reads EXACTLY g_len bytes starting at
+// g_dataPos (both globals are set by PNG_CHUNK before dispatching).
+// ---------------------------------------------------------------------------
+
+// IHDR - image header (13 bytes)
+typedef struct {
+    uint32 width;
+    uint32 height;
+    ubyte  bit_depth;
+    PNG_COLOR_TYPE color_type;
+    PNG_COMPRESSION_METHOD compression;
+    PNG_FILTER_METHOD filter;
+    PNG_INTERLACE_METHOD interlace;
+} PNG_CHUNK_IHDR <read=readIHDR>;
+
+string readIHDR(local PNG_CHUNK_IHDR &v) {
+    local string s;
+    SPrintf(s, "%d x %d, %d-bit, %s", v.width, v.height, v.bit_depth,
+            ColorTypeName(v.color_type));
+    if (v.interlace == INTERLACE_ADAM7) s += ", Adam7 interlaced";
+    return s;
+}
+
+// PLTE - palette (3 bytes per entry)
+typedef struct {
+    local int entries = g_len / 3;
+    if (g_len % 3 == 0 && entries > 0)
+        PNG_PALETTE_PIXEL color[entries];
+    else if (entries > 0)
+        ubyte bad_bytes[g_len];    // length not a multiple of 3
+} PNG_CHUNK_PLTE <read=readPLTE>;
+
+string readPLTE(local PNG_CHUNK_PLTE &v) {
+    local string s;
+    SPrintf(s, "%d palette entries", v.entries);
+    return s;
+}
+
+// IDAT - compressed image data
+typedef struct {
+    if (g_len > 0)
+        ubyte data[g_len];
+} PNG_CHUNK_IDAT <read=readIDAT>;
+
+string readIDAT(local PNG_CHUNK_IDAT &v) {
+    local string s;
+    SPrintf(s, "%d bytes of zlib-compressed image data", g_len);
+    return s;
+}
+
+// tRNS - transparency
+typedef struct {
+    switch (g_colorType) {
+        case 0:  // grayscale: 2 bytes
+            uint16 gray_sample;
+            break;
+        case 2:  // truecolor: 6 bytes
+            uint16 red;
+            uint16 green;
+            uint16 blue;
+            break;
+        case 3:  // indexed: one alpha value per palette entry
+            local int nAlpha = (g_palEntries > 0 && g_palEntries <= g_len) ? g_palEntries : g_len;
+            if (nAlpha > 0)
+                ubyte alpha_for_index[nAlpha];
+            break;
+        default: // invalid for color types 4 and 6, or IHDR not parsed yet
+            if (g_len > 0)
+                ubyte unexpected[g_len];
+            break;
+    }
+} PNG_CHUNK_TRNS <read=readTRNS>;
+
+string readTRNS(local PNG_CHUNK_TRNS &v) {
+    local string s;
+    if (g_colorType == 0)      SPrintf(s, "fully-transparent gray sample = %d", v.gray_sample);
+    else if (g_colorType == 2) SPrintf(s, "fully-transparent RGB = (%d, %d, %d)", v.red, v.green, v.blue);
+    else if (g_colorType == 3) {
+        local int nAlpha = (g_palEntries > 0 && g_palEntries <= g_len) ? g_palEntries : g_len;
+        SPrintf(s, "%d alpha values for palette indices", nAlpha);
+    }
+    else                       return "INVALID tRNS for this color type";
+    return s;
+}
+
+// gAMA - image gamma (4 bytes, value / 100000)
+typedef struct {
+    uint32 gamma_int;
+} PNG_CHUNK_GAMA <read=readGAMA>;
+
+string readGAMA(local PNG_CHUNK_GAMA &v) {
+    local string s;
+    SPrintf(s, "gamma = %f", v.gamma_int / 100000.0);
+    return s;
+}
+
+// cHRM - chromaticities (32 bytes)
+typedef struct {
+    uint32 white_x;
+    uint32 white_y;
+    uint32 red_x;
+    uint32 red_y;
+    uint32 green_x;
+    uint32 green_y;
+    uint32 blue_x;
+    uint32 blue_y;
+} PNG_CHUNK_CHRM <read=readCHRM>;
+
+string readCHRM(local PNG_CHUNK_CHRM &v) {
+    local string s;
+    SPrintf(s, "white(%.4f,%.4f) red(%.4f,%.4f) green(%.4f,%.4f) blue(%.4f,%.4f)",
+            v.white_x/100000.0, v.white_y/100000.0,
+            v.red_x/100000.0,   v.red_y/100000.0,
+            v.green_x/100000.0, v.green_y/100000.0,
+            v.blue_x/100000.0,  v.blue_y/100000.0);
+    return s;
+}
+
+// sRGB - standard RGB colour space (1 byte)
+typedef struct {
+    PNG_SRGB_INTENT rendering_intent;
+} PNG_CHUNK_SRGB <read=readSRGB>;
+
+string readSRGB(local PNG_CHUNK_SRGB &v) {
+    local string s;
+    switch (v.rendering_intent) {
+        case SRGB_PERCEPTUAL:   SPrintf(s, "rendering intent: Perceptual"); break;
+        case SRGB_COLORIMETRIC: SPrintf(s, "rendering intent: Relative colorimetric"); break;
+        case SRGB_SATURATION:   SPrintf(s, "rendering intent: Saturation"); break;
+        case SRGB_ABSOLUTE:     SPrintf(s, "rendering intent: Absolute colorimetric"); break;
+        default:                SPrintf(s, "rendering intent: UNKNOWN (%d)", v.rendering_intent); break;
+    }
+    return s;
+}
+
+// iCCP - embedded ICC profile (name\0method + zlib data)
+typedef struct {
+    local int nameLen = StrnLen(g_dataPos, g_len);
+    char profile_name[nameLen > 0 ? nameLen : 0];
+    local int hasProfile = (nameLen + 2 <= g_len) ? 1 : 0;
+    if (hasProfile) {
+        ubyte name_null;
+        PNG_COMPRESSION_METHOD compression_method;
+        ubyte compressed_profile[g_len - nameLen - 2];
+    }
+} PNG_CHUNK_ICCP <read=readICCP>;
+
+string readICCP(local PNG_CHUNK_ICCP &v) {
+    local string s;
+    if (v.hasProfile)
+        SPrintf(s, "ICC profile \"%s\" (%d bytes, zlib-compressed)",
+                v.profile_name, g_len - v.nameLen - 2);
+    else
+        SPrintf(s, "malformed iCCP (profile name \"%s\" not terminated)", v.profile_name);
+    return s;
+}
+
+// tEXt - uncompressed text (keyword\0text)
+typedef struct {
+    local int kwLen = StrnLen(g_dataPos, g_len);
+    char keyword[kwLen > 0 ? kwLen : 0];
+    local int hasText = (kwLen < g_len) ? 1 : 0;
+    if (hasText) {
+        ubyte keyword_null;
+        char text[g_len - kwLen - 1];
+    }
+} PNG_CHUNK_TEXT <read=readTEXT>;
+
+string readTEXT(local PNG_CHUNK_TEXT &v) {
+    local string s;
+    if (v.hasText) SPrintf(s, "%s = %s", v.keyword, v.text);
+    else           SPrintf(s, "%s (malformed: no text after keyword)", v.keyword);
+    return s;
+}
+
+// zTXt - compressed text (keyword\0method + zlib data)
+typedef struct {
+    local int kwLen = StrnLen(g_dataPos, g_len);
+    char keyword[kwLen > 0 ? kwLen : 0];
+    local int hasData = (kwLen + 2 <= g_len) ? 1 : 0;
+    if (hasData) {
+        ubyte keyword_null;
+        PNG_COMPRESSION_METHOD compression_method;
+        ubyte compressed_text[g_len - kwLen - 2];
+    }
+} PNG_CHUNK_ZTXT <read=readZTXT>;
+
+string readZTXT(local PNG_CHUNK_ZTXT &v) {
+    local string s;
+    if (v.hasData)
+        SPrintf(s, "%s = (%d bytes zlib-compressed text)", v.keyword, g_len - v.kwLen - 2);
+    else
+        SPrintf(s, "%s (malformed zTXt)", v.keyword);
+    return s;
+}
+
+// iTXt - international text
+// (keyword\0flag method\0language\0translated\0text)
+typedef struct {
+    local int kwLen = StrnLen(g_dataPos, g_len);
+    char keyword[kwLen > 0 ? kwLen : 0];
+    local int hasHeader = (g_len > kwLen + 2) ? 1 : 0;
+    if (hasHeader) {
+        ubyte keyword_null;
+        ubyte compression_flag;  // 0 = text uncompressed, 1 = compressed
+        PNG_COMPRESSION_METHOD compression_method;
+    }
+    local int off  = kwLen + 3;
+    local int rest = g_len - off;
+    local int langLen = (rest > 0) ? StrnLen(g_dataPos + off, rest) : 0;
+    char language_tag[langLen > 0 ? langLen : 0];
+    local int hasLangNul = (langLen < rest) ? 1 : 0;
+    local int off2   = off + langLen + 1;
+    local int rest2  = g_len - off2;
+    local int transLen = 0;
+    local int hasText  = 0;
+    if (hasLangNul) {
+        ubyte language_null;
+        transLen = (rest2 > 0) ? StrnLen(g_dataPos + off2, rest2) : 0;
+        char translated_keyword[transLen > 0 ? transLen : 0];
+        hasText = (transLen < rest2) ? 1 : 0;
+        if (hasText) {
+            ubyte translated_null;
+            char text[g_len - off2 - transLen - 1];
+        }
+    }
+} PNG_CHUNK_ITXT <read=readITXT>;
+
+string readITXT(local PNG_CHUNK_ITXT &v) {
+    local string s;
+    if (!v.hasHeader) {
+        SPrintf(s, "%s (malformed iTXt)", v.keyword);
+        return s;
+    }
+    if (v.compression_flag == 0 && v.hasText)
+        SPrintf(s, "%s [%s] %s", v.keyword, v.language_tag, v.text);
+    else if (v.compression_flag == 0)
+        SPrintf(s, "%s [%s] (no text)", v.keyword, v.language_tag);
+    else
+        SPrintf(s, "%s [%s] (%d bytes compressed text)",
+                v.keyword, v.language_tag, g_len - v.off2 - v.transLen - 1);
+    return s;
+}
+
+// bKGD - background colour
+typedef struct {
+    switch (g_colorType) {
+        case 3:  // indexed: palette index
+            ubyte palette_index;
+            break;
+        case 0: case 4:  // grayscale
+            uint16 gray;
+            break;
+        case 2: case 6:  // truecolor
+            uint16 red;
+            uint16 green;
+            uint16 blue;
+            break;
+        default:
+            if (g_len > 0)
+                ubyte unexpected[g_len];
+            break;
+    }
+} PNG_CHUNK_BKGD <read=readBKGD>;
+
+string readBKGD(local PNG_CHUNK_BKGD &v) {
+    local string s;
+    if (g_colorType == 3)      SPrintf(s, "background palette index = %d", v.palette_index);
+    else if (g_colorType == 0 || g_colorType == 4) SPrintf(s, "background gray = %d", v.gray);
+    else if (g_colorType == 2 || g_colorType == 6)
+        SPrintf(s, "background RGB = (%d, %d, %d)", v.red, v.green, v.blue);
+    else                       return "UNKNOWN background (IHDR not parsed yet)";
+    return s;
+}
+
+// sBIT - significant bits
+typedef struct {
+    switch (g_colorType) {
+        case 0:
+            ubyte gray_bits;
+            break;
+        case 3:
+            ubyte red_bits;
+            ubyte green_bits;
+            ubyte blue_bits;
+            break;
+        case 4:
+            ubyte gray_bits;
+            ubyte alpha_bits;
+            break;
+        case 2:
+            ubyte red_bits;
+            ubyte green_bits;
+            ubyte blue_bits;
+            break;
+        case 6:
+            ubyte red_bits;
+            ubyte green_bits;
+            ubyte blue_bits;
+            ubyte alpha_bits;
+            break;
+        default:
+            if (g_len > 0)
+                ubyte unexpected[g_len];
+            break;
+    }
+} PNG_CHUNK_SBIT <read=readSBIT>;
+
+string readSBIT(local PNG_CHUNK_SBIT &v) {
+    local string s = "significant bits: ";
+    if (g_colorType == 0)      SPrintf(s, "%sgray=%d", s, v.gray_bits);
+    else if (g_colorType == 3) SPrintf(s, "%sR=%d G=%d B=%d", s, v.red_bits, v.green_bits, v.blue_bits);
+    else if (g_colorType == 4) SPrintf(s, "%sgray=%d alpha=%d", s, v.gray_bits, v.alpha_bits);
+    else if (g_colorType == 2) SPrintf(s, "%sR=%d G=%d B=%d", s, v.red_bits, v.green_bits, v.blue_bits);
+    else if (g_colorType == 6) SPrintf(s, "%sR=%d G=%d B=%d A=%d", s, v.red_bits, v.green_bits, v.blue_bits, v.alpha_bits);
+    else                       return "UNKNOWN sBIT (IHDR not parsed yet)";
+    return s;
+}
+
+// pHYs - physical pixel dimensions (9 bytes)
+typedef struct {
+    uint32 pixels_per_unit_x;
+    uint32 pixels_per_unit_y;
+    ubyte  unit;                                       // 0 = unknown, 1 = meter
+} PNG_CHUNK_PHYS <read=readPHYS>;
+
+string readPHYS(local PNG_CHUNK_PHYS &v) {
+    local string s;
+    if (v.unit == 1)
+        SPrintf(s, "%d x %d pixels/meter (%.2f x %.2f DPI)",
+                v.pixels_per_unit_x, v.pixels_per_unit_y,
+                v.pixels_per_unit_x * 0.0254, v.pixels_per_unit_y * 0.0254);
+    else
+        SPrintf(s, "%d x %d pixels per (undefined) unit",
+                v.pixels_per_unit_x, v.pixels_per_unit_y);
+    return s;
+}
+
+// sPLT - suggested palette (name\0depth + entries)
+typedef struct {
+    local int nameLen = StrnLen(g_dataPos, g_len);
+    char palette_name[nameLen > 0 ? nameLen : 0];
+    local int hasEntries = (nameLen + 2 <= g_len) ? 1 : 0;
+    local int depth = 0;
+    if (hasEntries) {
+        ubyte name_null;
+        ubyte sample_depth;                            // 8 or 16
+        depth = sample_depth;
+    }
+    local int rest      = g_len - nameLen - 2;
+    local int entrySize = (depth == 16) ? 10 : 6;
+    local int entries   = (rest > 0 && entrySize > 0) ? rest / entrySize : 0;
+    if (depth == 16 && entries > 0)
+        SPLT_ENTRY16 entries16[entries];
+    else if (entries > 0)
+        SPLT_ENTRY8 entries8[entries];
+} PNG_CHUNK_SPLT <read=readSPLT>;
+
+string readSPLT(local PNG_CHUNK_SPLT &v) {
+    local string s;
+    SPrintf(s, "palette \"%s\", %d-bit, %d entries", v.palette_name, v.depth, v.entries);
+    return s;
+}
+
+// hIST - histogram of palette usage (2 bytes per palette entry)
+typedef struct {
+    local int n = (g_palEntries > 0 && g_palEntries * 2 <= g_len) ? g_palEntries : g_len / 2;
+    if (n > 0)
+        uint16 frequency[n];
+} PNG_CHUNK_HIST <read=readHIST>;
+
+string readHIST(local PNG_CHUNK_HIST &v) {
+    local string s;
+    SPrintf(s, "%d palette frequency values", v.n);
+    return s;
+}
+
+// tIME - last modification time (7 bytes)
+typedef struct {
+    uint16 year;
+    ubyte  month;
+    ubyte  day;
+    ubyte  hour;
+    ubyte  minute;
+    ubyte  second;
+} PNG_CHUNK_TIME <read=readTIME>;
+
+string readTIME(local PNG_CHUNK_TIME &v) {
+    local string s;
+    SPrintf(s, "%04d-%02d-%02d %02d:%02d:%02d UTC",
+            v.year, v.month, v.day, v.hour, v.minute, v.second);
+    return s;
+}
+
+// eXIf - Exif/TIFF metadata (PNG third edition)
+typedef struct {
+    if (g_len > 0)
+        ubyte exif_data[g_len];
+} PNG_CHUNK_EXIF <read=readEXIF>;
+
+string readEXIF(local PNG_CHUNK_EXIF &v) {
+    local string s;
+    SPrintf(s, "%d bytes of Exif (TIFF) metadata", g_len);
+    return s;
+}
+
+// oFFs - image offset (9 bytes)
+typedef struct {
+    int32 x_offset;
+    int32 y_offset;
+    ubyte unit;                                        // 0 = pixel, 1 = micron
+} PNG_CHUNK_OFFS <read=readOFFS>;
+
+string readOFFS(local PNG_CHUNK_OFFS &v) {
+    local string s;
+    SPrintf(s, "offset (%d, %d), unit = %s", v.x_offset, v.y_offset,
+            v.unit == 1 ? "micron" : "pixel");
+    return s;
+}
+
+// sCAL - physical scale (unit + two ASCII floats)
+typedef struct {
+    local int unitVal = (g_len >= 1) ? ReadUByte(g_dataPos) : -1;   // 0 = meter, 1 = radian
+    if (g_len >= 1)
+        ubyte unit;
+    local int rest = g_len - 1;
+    local int wLen = (rest > 0) ? StrnLen(g_dataPos + 1, rest) : 0;
+    char pixel_width[wLen > 0 ? wLen : 0];
+    local int hasHeight = (wLen < rest) ? 1 : 0;
+    if (hasHeight) {
+        ubyte width_null;
+        char pixel_height[rest - wLen - 1];
+    }
+} PNG_CHUNK_SCAL <read=readSCAL>;
+
+string readSCAL(local PNG_CHUNK_SCAL &v) {
+    local string s;
+    if (v.hasHeight)
+        SPrintf(s, "unit = %s; %s pixels wide, %s pixels high",
+                v.unitVal == 1 ? "radian" : "meter", v.pixel_width, v.pixel_height);
+    else
+        SPrintf(s, "unit = %s (malformed)", v.unitVal == 1 ? "radian" : "meter");
+    return s;
+}
+
+// cICP - coding-independent code points (PNG-3 / HDR, 4 bytes)
+typedef struct {
+    ubyte colour_primaries;
+    ubyte transfer_function;
+    ubyte matrix_coefficients;
+    ubyte full_range_flag;
+} PNG_CHUNK_CICP <read=readCICP>;
+
+string readCICP(local PNG_CHUNK_CICP &v) {
+    local string s;
+    SPrintf(s, "primaries=%d transfer=%d matrix=%d full-range=%d",
+            v.colour_primaries, v.transfer_function, v.matrix_coefficients,
+            v.full_range_flag);
+    return s;
+}
+
+// mDCv - mastering display colour volume (24 bytes)
+typedef struct {
+    uint16 red_x;
+    uint16 red_y;
+    uint16 green_x;
+    uint16 green_y;
+    uint16 blue_x;
+    uint16 blue_y;
+    uint16 white_x;
+    uint16 white_y;
+    uint32 max_luminance;                              // 0.0001 cd/m^2 units
+    uint32 min_luminance;
+} PNG_CHUNK_MDCV <read=readMDCV>;
+
+string readMDCV(local PNG_CHUNK_MDCV &v) {
+    local string s;
+    SPrintf(s, "max %.4f cd/m^2, min %.4f cd/m^2",
+            v.max_luminance / 10000.0, v.min_luminance / 10000.0);
+    return s;
+}
+
+// cLLi - content light level information (8 bytes)
+typedef struct {
+    uint32 max_cll;                                    // 0.0001 cd/m^2 units
+    uint32 max_fall;
+} PNG_CHUNK_CLLI <read=readCLLI>;
+
+string readCLLI(local PNG_CHUNK_CLLI &v) {
+    local string s;
+    SPrintf(s, "MaxCLL %.4f, MaxFALL %.4f cd/m^2",
+            v.max_cll / 10000.0, v.max_fall / 10000.0);
+    return s;
+}
+
+// caNv - animation bounding box (16 bytes)
+typedef struct {
+    int32 left;
+    int32 top;
+    int32 right;
+    int32 bottom;
+} PNG_CHUNK_CANV <read=readCANV>;
+
+string readCANV(local PNG_CHUNK_CANV &v) {
+    local string s;
+    SPrintf(s, "canvas (%d, %d, %d, %d)", v.left, v.top, v.right, v.bottom);
+    return s;
+}
+
+// acTL - animation control (8 bytes)
+typedef struct {
+    uint32 num_frames;
+    uint32 num_plays;                                  // 0 = infinite
+} PNG_CHUNK_ACTL <read=readACTL>;
+
+string readACTL(local PNG_CHUNK_ACTL &v) {
+    local string s;
+    if (v.num_plays == 0) SPrintf(s, "%d frames, plays infinitely", v.num_frames);
+    else                  SPrintf(s, "%d frames, %d plays", v.num_frames, v.num_plays);
+    return s;
+}
+
+// fcTL - frame control (26 bytes)
+typedef struct {
+    uint32 sequence_number;
+    uint32 width;
+    uint32 height;
+    uint32 x_offset;
+    uint32 y_offset;
+    uint16 delay_num;
+    uint16 delay_den;                                  // 0 = interpret as 100
+    APNG_DISPOSE_OP dispose_op;
+    APNG_BLEND_OP blend_op;
+} PNG_CHUNK_FCTL <read=readFCTL>;
+
+string readFCTL(local PNG_CHUNK_FCTL &v) {
+    local string s;
+    local int den = (v.delay_den == 0) ? 100 : v.delay_den;
+    SPrintf(s, "frame seq %d: %dx%d at (%d,%d), delay %.1f ms, dispose=%d, blend=%d",
+            v.sequence_number, v.width, v.height, v.x_offset, v.y_offset,
+            v.delay_num * 1000.0 / den, v.dispose_op, v.blend_op);
+    return s;
+}
+
+// fdAT - frame data
+typedef struct {
+    local int hasSeq = (g_len >= 4) ? 1 : 0;
+    if (hasSeq)
+        uint32 sequence_number;
+    if (g_len > 4)
+        ubyte frame_data[g_len - 4];
+} PNG_CHUNK_FDAT <read=readFDAT>;
+
+string readFDAT(local PNG_CHUNK_FDAT &v) {
+    local string s;
+    if (v.hasSeq)
+        SPrintf(s, "frame seq %d, %d bytes of zlib-compressed data",
+                v.sequence_number, g_len - 4);
+    else
+        SPrintf(s, "malformed fdAT (%d bytes)", g_len);
+    return s;
+}
+
+// Anything else - raw bytes (we still scan it for hidden text)
+typedef struct {
+    if (g_len > 0)
+        ubyte data[g_len];
+} PNG_CHUNK_UNKNOWN <read=readUNKNOWN>;
+
+string readUNKNOWN(local PNG_CHUNK_UNKNOWN &v) {
+    local string s;
+    SPrintf(s, "%d bytes of data", g_len);
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// Anomaly: bytes that do not belong to a PNG file.  Highlighted MAGENTA and
+// dumped (format guess + printable strings) to the Output panel.
+// ---------------------------------------------------------------------------
+struct RAW_ANOMALY (int64 n, string label) {
+    local int64 p0 = FTell();
+    if (n > 0)
+        ubyte data[n] <bgcolor=COL_ANOM>;
+    g_anomalies++;
+    Printf("!!! ANOMALY: %s - %d byte(s) at offset 0x%Lx, this is NOT valid PNG data\n",
+           label, n, p0);
+    local string hint = DetectFormat(p0, n);
+    if (hint != "")
+        Printf("      Recognized as: %s\n", hint);
+    local string hx = "";
+    local int i;
+    for (i = 0; i < n && i < 32; i++)
+        SPrintf(hx, "%s%02X ", hx, ReadUByte(p0 + i));
+    if (n > 0)
+        Printf("      Hex head: %s\n", hx);
+    PrintStringsAt(p0, n, label);
+};
+
+// ---------------------------------------------------------------------------
+// Generic chunk: length + type + data + CRC32
+// ---------------------------------------------------------------------------
+typedef struct {
+    local int64 start = FTell();
+    // Peek at the chunk type first so the whole chunk gets one background color
+    local uint32 tval = ReadUInt(start + 4);      // 4 name bytes as big-endian uint32
+    local int bgc = g_suspicious ? COL_ANOM : ChunkBgColor(tval);
+
+    uint32 length <bgcolor=bgc>;
+    CTYPE   type  <bgcolor=bgc, fgcolor=cDkBlue>;
+
+    local int64 dataPos = FTell();
+    g_len     = length;
+    g_dataPos = dataPos;
+    local int64 avail = FileSize() - dataPos;
+    local int truncated = 0;
+    if (g_len > avail) {
+        g_len = avail;          // clamp: never read past end of file
+        truncated = 1;
+    }
+
+    // --- dispatch on the chunk name ------------------------------------
+    local string cname = type.cname;
+    if (cname == "IDAT") {
+        PNG_CHUNK_IDAT idat;
+        if (!g_sawIHDR)
+            Printf("!!! ERROR: IDAT appears before IHDR\n");
+        g_sawIDAT = 1;
+    }
+    else if (cname == "IHDR") {
+        if (length == 13) {
+            PNG_CHUNK_IHDR ihdr;
+            g_colorType = ihdr.color_type;
+            if (g_chunkCount == 0) {
+                g_sawIHDR  = 1;
+                g_width    = ihdr.width;
+                g_height   = ihdr.height;
+                g_bitDepth = ihdr.bit_depth;
+                g_interlaced = (ihdr.interlace == INTERLACE_ADAM7) ? 1 : 0;
+                if (ihdr.width == 0 || ihdr.width > 0x7FFFFFFF ||
+                    ihdr.height == 0 || ihdr.height > 0x7FFFFFFF)
+                    Printf("!!! ERROR: IHDR width/height must be 1..2^31-1\n");
+                if (!ValidDepth(ihdr.color_type, ihdr.bit_depth))
+                    Printf("!!! ERROR: %d-bit depth is invalid for color type %d (%s)\n",
+                           ihdr.bit_depth, ihdr.color_type, ColorTypeName(ihdr.color_type));
+                if (ihdr.compression != COMPRESSION_DEFLATE)
+                    Printf("!!! ERROR: unknown compression method %d\n", ihdr.compression);
+                if (ihdr.filter != FILTER_ADAPTIVE)
+                    Printf("!!! ERROR: unknown filter method %d\n", ihdr.filter);
+                if (ihdr.interlace > INTERLACE_ADAM7)
+                    Printf("!!! ERROR: unknown interlace method %d\n", ihdr.interlace);
+            } else {
+                Printf("!!! ERROR: IHDR must be the FIRST chunk (found as chunk #%d)\n",
+                       g_chunkCount + 1);
+            }
+        } else {
+            LengthError("IHDR", 13, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "IEND") {
+        if (length != 0)
+            Printf("!!! ERROR: IEND chunk must be empty (has %d bytes)\n", length);
+        if (g_sawIEND)
+            Printf("!!! ERROR: duplicate IEND chunk\n");
+        g_sawIEND = 1;
+    }
+    else if (cname == "PLTE") {
+        PNG_CHUNK_PLTE plte;
+        if (g_sawPLTE)
+            Printf("!!! ERROR: duplicate PLTE chunk\n");
+        if (g_sawIDAT)
+            Printf("!!! ERROR: PLTE must appear before IDAT\n");
+        if (g_colorType == 0 || g_colorType == 4)
+            Printf("!!! WARNING: PLTE is not allowed for grayscale color type %d\n", g_colorType);
+        if (length % 3 != 0)
+            Printf("!!! ERROR: PLTE length %d is not a multiple of 3\n", length);
+        g_sawPLTE    = 1;
+        g_palEntries = plte.entries;
+    }
+    else if (cname == "tRNS") {
+        local int expect = -1;
+        if (g_colorType == 0)      expect = 2;
+        else if (g_colorType == 2) expect = 6;
+        if (g_colorType == 4 || g_colorType == 6) {
+            Printf("!!! ERROR: tRNS is forbidden for alpha color type %d - treating as raw data\n",
+                   g_colorType);
+            PNG_CHUNK_UNKNOWN unknown;
+        } else if (expect >= 0 && length != expect) {
+            LengthError("tRNS", expect, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        } else {
+            PNG_CHUNK_TRNS trns;
+            if (g_colorType == 3 && !g_sawPLTE)
+                Printf("!!! ERROR: tRNS must appear after PLTE\n");
+            if (g_sawIDAT)
+                Printf("!!! WARNING: tRNS should appear before IDAT\n");
+            if (g_colorType == 3 && g_palEntries > 0 && length > g_palEntries)
+                Printf("!!! ERROR: tRNS has more entries (%d) than the palette (%d)\n",
+                       length, g_palEntries);
+        }
+    }
+    else if (cname == "gAMA") {
+        if (length == 4) {
+            PNG_CHUNK_GAMA gama;
+        } else {
+            LengthError("gAMA", 4, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "cHRM") {
+        if (length == 32) {
+            PNG_CHUNK_CHRM chrm;
+        } else {
+            LengthError("cHRM", 32, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "sRGB") {
+        if (length == 1) {
+            PNG_CHUNK_SRGB srgb;
+        } else {
+            LengthError("sRGB", 1, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "iCCP") {
+        PNG_CHUNK_ICCP iccp;
+        if (iccp.hasProfile) {
+            Printf("  [iCCP] ICC profile \"%s\" (%d bytes compressed)\n",
+                   iccp.profile_name, length - iccp.nameLen - 2);
+            PrintStringsAt(g_dataPos + iccp.nameLen + 2, length - iccp.nameLen - 2, "iCCP");
+        } else {
+            Printf("!!! WARNING: malformed iCCP chunk (%d bytes)\n", length);
+        }
+    }
+    else if (cname == "tEXt") {
+        PNG_CHUNK_TEXT text;
+        if (text.hasText)
+            Printf("  [tEXt] %s = %s\n", text.keyword, text.text);
+        else
+            Printf("!!! WARNING: tEXt chunk has keyword but no text (%d bytes)\n", length);
+    }
+    else if (cname == "zTXt") {
+        PNG_CHUNK_ZTXT ztxt;
+        if (ztxt.hasData) {
+            Printf("  [zTXt] \"%s\" = %d bytes of zlib-compressed text\n",
+                   ztxt.keyword, length - ztxt.kwLen - 2);
+            // plaintext appended after the zlib stream is a classic hiding spot
+            PrintStringsAt(g_dataPos + ztxt.kwLen + 2, length - ztxt.kwLen - 2, "zTXt");
+        } else {
+            Printf("!!! WARNING: malformed zTXt chunk (%d bytes)\n", length);
+        }
+    }
+    else if (cname == "iTXt") {
+        PNG_CHUNK_ITXT itxt;
+        if (!itxt.hasHeader) {
+            Printf("!!! WARNING: malformed iTXt chunk (%d bytes)\n", length);
+        } else if (itxt.compression_flag == 0 && itxt.hasText) {
+            Printf("  [iTXt] %s [%s] = %s\n", itxt.keyword, itxt.language_tag, itxt.text);
+        } else if (itxt.compression_flag == 0) {
+            Printf("  [iTXt] %s [%s] (no text)\n", itxt.keyword, itxt.language_tag);
+        } else {
+            Printf("  [iTXt] %s [%s] = %d bytes of zlib-compressed text\n",
+                   itxt.keyword, itxt.language_tag,
+                   length - itxt.off2 - itxt.transLen - 1);
+            PrintStringsAt(g_dataPos + itxt.off2 + itxt.transLen + 1,
+                           length - itxt.off2 - itxt.transLen - 1, "iTXt");
+        }
+    }
+    else if (cname == "bKGD") {
+        local int expect = -1;
+        if (g_colorType == 3)      expect = 1;
+        else if (g_colorType == 0 || g_colorType == 4) expect = 2;
+        else if (g_colorType == 2 || g_colorType == 6) expect = 6;
+        if (expect >= 0 && length != expect) {
+            LengthError("bKGD", expect, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        } else {
+            PNG_CHUNK_BKGD bkgd;
+            if (g_sawIDAT)
+                Printf("!!! WARNING: bKGD should appear before IDAT\n");
+            if (g_colorType == 3 && !g_sawPLTE)
+                Printf("!!! ERROR: bKGD must appear after PLTE\n");
+        }
+    }
+    else if (cname == "sBIT") {
+        local int expect = -1;
+        if (g_colorType == 0)      expect = 1;
+        else if (g_colorType == 2) expect = 3;
+        else if (g_colorType == 3) expect = 3;
+        else if (g_colorType == 4) expect = 2;
+        else if (g_colorType == 6) expect = 4;
+        if (expect >= 0 && length != expect) {
+            LengthError("sBIT", expect, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        } else {
+            PNG_CHUNK_SBIT sbit;
+            if (g_sawIDAT)
+                Printf("!!! WARNING: sBIT should appear before IDAT\n");
+        }
+    }
+    else if (cname == "pHYs") {
+        if (length == 9) {
+            PNG_CHUNK_PHYS phys;
+        } else {
+            LengthError("pHYs", 9, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "sPLT") {
+        PNG_CHUNK_SPLT splt;
+        Printf("  [sPLT] palette \"%s\" (%d-bit, %d entries)\n",
+               splt.palette_name, splt.sample_depth, splt.entries);
+    }
+    else if (cname == "hIST") {
+        PNG_CHUNK_HIST hist;
+        if (!g_sawPLTE)
+            Printf("!!! ERROR: hIST must appear after PLTE\n");
+        if (g_sawIDAT)
+            Printf("!!! WARNING: hIST should appear before IDAT\n");
+        if (g_palEntries > 0 && length != g_palEntries * 2)
+            Printf("!!! ERROR: hIST has %d entries but palette has %d\n",
+                   length / 2, g_palEntries);
+    }
+    else if (cname == "tIME") {
+        if (length == 7) {
+            PNG_CHUNK_TIME time;
+            Printf("  [tIME] last modified: %s\n", readTIME(time));
+        } else {
+            LengthError("tIME", 7, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "eXIf") {
+        PNG_CHUNK_EXIF exif;
+        Printf("  [eXIf] %d bytes of Exif metadata\n", length);
+        PrintStringsAt(g_dataPos, length, "eXIf");
+        if (g_sawIDAT)
+            Printf("!!! WARNING: eXIf should appear before IDAT\n");
+    }
+    else if (cname == "oFFs") {
+        if (length == 9) {
+            PNG_CHUNK_OFFS offs;
+        } else {
+            LengthError("oFFs", 9, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "sCAL") {
+        PNG_CHUNK_SCAL scal;
+    }
+    else if (cname == "cICP") {
+        if (length == 4) {
+            PNG_CHUNK_CICP cicp;
+        } else {
+            LengthError("cICP", 4, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "mDCv") {
+        if (length == 24) {
+            PNG_CHUNK_MDCV mdcv;
+        } else {
+            LengthError("mDCv", 24, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "cLLi") {
+        if (length == 8) {
+            PNG_CHUNK_CLLI clli;
+        } else {
+            LengthError("cLLi", 8, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "caNv") {
+        if (length == 16) {
+            PNG_CHUNK_CANV canv;
+        } else {
+            LengthError("caNv", 16, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "acTL") {
+        if (length == 8) {
+            PNG_CHUNK_ACTL actl;
+            if (g_sawIDAT)
+                Printf("!!! ERROR: acTL must appear before IDAT\n");
+            g_hasACTL   = 1;
+            g_numFrames = actl.num_frames;
+            g_numPlays  = actl.num_plays;
+        } else {
+            LengthError("acTL", 8, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "fcTL") {
+        if (length == 26) {
+            PNG_CHUNK_FCTL fctl;
+            if (g_lastSeq >= 0 && fctl.sequence_number != g_lastSeq + 1)
+                Printf("!!! WARNING: APNG sequence number jumped from %d to %d\n",
+                       g_lastSeq, fctl.sequence_number);
+            g_lastSeq = fctl.sequence_number;
+            g_framesParsed++;
+            g_totalMs += fctl.delay_num * 1000.0 /
+                         ((fctl.delay_den == 0) ? 100 : fctl.delay_den);
+        } else {
+            LengthError("fcTL", 26, length);
+            PNG_CHUNK_UNKNOWN unknown;
+        }
+    }
+    else if (cname == "fdAT") {
+        PNG_CHUNK_FDAT fdat;
+        if (length < 4) {
+            Printf("!!! ERROR: fdAT must hold at least a sequence number (got %d)\n", length);
+        } else {
+            if (g_lastSeq >= 0 && fdat.sequence_number != g_lastSeq + 1)
+                Printf("!!! WARNING: APNG sequence number jumped from %d to %d\n",
+                       g_lastSeq, fdat.sequence_number);
+            g_lastSeq = fdat.sequence_number;
+        }
+    }
+    else {
+        // Unknown chunk. Ancillary unknown chunks are legal, but they are
+        // prime real estate for hidden data - dump any strings found.
+        PNG_CHUNK_UNKNOWN unknown;
+        if (!(tval & 0x20000000))
+            Printf("!!! ERROR: unknown CRITICAL chunk \"%s\" - not a valid PNG!\n", cname);
+        else
+            Printf("  [????] unknown ancillary chunk \"%s\", %d bytes\n", cname, length);
+        if (length > 0)
+            PrintStringsAt(g_dataPos, g_len, cname);
+    }
+
+    // Chunks are not allowed between two IDATs (APNG fcTL/fdAT excepted)
+    if (g_sawIDAT && cname != "IDAT" && cname != "IEND" &&
+        cname != "fcTL" && cname != "fdAT" && !g_idatGapReported) {
+        Printf("!!! ERROR: chunk \"%s\" appears between IDAT chunks\n", cname);
+        g_idatGapReported = 1;
+    }
+
+    // --- CRC32 over type + data ----------------------------------------
+    local int64 afterData = FTell();
+    if (afterData != dataPos + g_len) {
+        // a sub-parser miscounted (malformed chunk) - resynchronize
+        Printf("!!! WARNING: parser consumed %d bytes of chunk \"%s\" but its length is %d, resyncing\n",
+               afterData - dataPos, cname, g_len);
+        FSeek(dataPos + g_len);
+    }
+
+    local int crcOk = -1;      // -1 = not verified (truncated), 0 = bad, 1 = ok
+    if (truncated) {
+        g_crcErrors++;
+        Printf("!!! ERROR: file truncated inside chunk \"%s\": declared %d bytes, only %d present\n",
+               cname, length, g_len);
+    } else if (FileSize() - FTell() >= 4) {
+        local uint32 crcStored = ReadUInt(FTell());
+        crcOk = (crcStored == Checksum(CHECKSUM_CRC32, start + 4, 4 + g_len)) ? 1 : 0;
+        uint32 crc <format=hex, bgcolor=(crcOk ? bgc : COL_CRCBAD)>;
+        if (!crcOk) {
+            g_crcErrors++;
+            Printf("!!! ERROR: CRC mismatch in chunk \"%s\" (#%d): stored %08X, calculated %08X\n",
+                   cname, g_chunkCount + 1, crcStored,
+                   Checksum(CHECKSUM_CRC32, start + 4, 4 + g_len));
+        }
+    } else {
+        g_crcErrors++;
+        crcOk = -1;
+        Printf("!!! ERROR: chunk \"%s\" is missing its CRC (file truncated)\n", cname);
+    }
+
+    if (g_suspicious) {
+        g_anomalies++;
+        Printf("!!! ANOMALY: chunk \"%s\" appears AFTER IEND - data is hidden here\n", cname);
+    }
+
+    // one-line report per chunk
+    Printf("[%d] 0x%Lx  %s  len=%d  CRC:%s%s\n",
+           g_chunkCount + 1, start, cname, length,
+           (crcOk == -1) ? "n/a" : (crcOk ? "ok" : "BAD"),
+           g_suspicious ? "  <-- AFTER IEND" : "");
+
+    g_chunkCount++;
+} PNG_CHUNK <read=readCHUNK>;
+
+string readCHUNK(local PNG_CHUNK &c) {
+    local string s;
+    SPrintf(s, "%s", c.type.cname);
+    s += " (";
+    s += (c.type.cname[0] & 0x20) ? "ancillary" : "critical";
+    s += (c.type.cname[1] & 0x20) ? ", private" : ", public";
+    if (c.type.cname[2] & 0x20) s += ", RESERVED-BIT-SET";
+    s += (c.type.cname[3] & 0x20) ? ", safe-to-copy" : ", unsafe-to-copy";
+    s += ")";
+    return s;
+}
+
+// ---------------------------------------------------------------------------
+// MAIN
+// ---------------------------------------------------------------------------
+local int64 fsize  = FileSize();
+local int64 sigOff = -1;
+
+if (fsize >= 8) {
+    local ubyte head[8];
+    ReadBytes(head, 0, 8);
+    if (head[0] == 0x89 && head[1] == 0x50 && head[2] == 0x4E && head[3] == 0x47 &&
+        head[4] == 0x0D && head[5] == 0x0A && head[6] == 0x1A && head[7] == 0x0A)
+        sigOff = 0;
+}
+
+// Signature not at offset 0? Look for it - anything before it is hidden data.
+if (sigOff < 0) {
+    local int64 lim = (fsize > 0x400000) ? 0x400000 : fsize;   // scan max 4 MB
+    local int64 i;
+    for (i = 1; i + 8 <= fsize && i < lim; i++) {
+        if (ReadUByte(i) == 0x89 && ReadUByte(i+1) == 0x50 && ReadUByte(i+2) == 0x4E &&
+            ReadUByte(i+3) == 0x47 && ReadUByte(i+4) == 0x0D && ReadUByte(i+5) == 0x0A &&
+            ReadUByte(i+6) == 0x1A && ReadUByte(i+7) == 0x0A)
+            break;
+    }
+    if (i + 8 <= fsize && i < lim)
+        sigOff = i;
+}
+
+Printf("==================== PNG Template Report ====================\n");
+
+if (sigOff < 0) {
+    if (fsize > 0)
+        RAW_ANOMALY everything(fsize, "Entire file - no PNG signature found");
+    Printf("!!! ERROR: not a PNG file, template stopped.\n");
+    return -1;
+}
+
+if (sigOff > 0)
+    RAW_ANOMALY prepended(sigOff, "Data hidden BEFORE the PNG signature");
+
+FSeek(sigOff);
+PNG_SIGNATURE sig <bgcolor=COL_SIG>;
+
+// Chunk loop
+local int64 rem = 0;
+while (!FEof()) {
+    rem = FileSize() - FTell();
+    if (rem < 12) {
+        if (rem > 0) {
+            if (g_sawIEND)
+                RAW_ANOMALY tail(rem, "Data hidden AFTER IEND (truncated chunk header)");
+            else
+                RAW_ANOMALY tail(rem, "Trailing bytes - incomplete chunk header");
+        }
+        break;
+    }
+    g_suspicious = g_sawIEND;   // any chunk after IEND is suspicious
+    PNG_CHUNK chunk;
+}
+
+// ---------------------------------------------------------------------------
+// Final checks + summary
+// ---------------------------------------------------------------------------
+if (g_chunkCount > 0) {
+    if (!g_sawIHDR)
+        Printf("!!! ERROR: IHDR chunk is missing\n");
+    if (!g_sawIEND)
+        Printf("!!! ERROR: IEND chunk is missing (file may be truncated)\n");
+}
+
+Printf("\n======================= PNG Summary =======================\n");
+if (g_sawIHDR) {
+    Printf("  Image     : %d x %d, %d-bit, %s%s\n",
+           g_width, g_height, g_bitDepth, ColorTypeName(g_colorType),
+           g_interlaced ? ", Adam7 interlaced" : "");
+}
+Printf("  Chunks    : %d\n", g_chunkCount);
+Printf("  CRC32     : %d error(s)\n", g_crcErrors);
+if (g_hasACTL)
+    Printf("  Animation : %d frames declared, %d parsed, plays=%s, total %.0f ms\n",
+           g_numFrames, g_framesParsed, g_numPlays == 0 ? "infinite" : ToString(g_numPlays),
+           g_totalMs);
+if (g_anomalies > 0) {
+    Printf("  ANOMALIES : %d region(s) of non-PNG data (magenta) - hidden data likely!\n",
+           g_anomalies);
+} else {
+    Printf("  Anomalies : none (nothing before the signature or after IEND)\n");
+}
+Printf("=============================================================\n");

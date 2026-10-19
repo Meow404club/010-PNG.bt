@@ -1,0 +1,24 @@
+Executing template 'C:\Users\lyubi\Documents\SweetScape\010 Templates\Repository\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\3_trailing.png'...
+*ERROR Line 332: Template passed end of file at variable 'data'. 
+Executing script 'D:\workspace\010-PNG.bt\test_png.1sc' on 'D:\workspace\010-PNG.bt\testfiles\3_trailing.png'...
+Template executed successfully.
+Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\3_trailing.png'...
+==================== PNG Template Report ====================
+[1] 0x8  IHDR  len=13  CRC:ok
+[2] 0x21  IDAT  len=156  CRC:ok
+[3] 0xc9  IEND  len=0  CRC:ok
+  [????] unknown ancillary chunk "g{yo", 174484577 bytes
+      ASCII strings in g{yo:
+        "u_found_me_after_IEND}"  @ 0xdd (22 chars)
+        "secret.txtZIP-with-hidden-file-payload"  @ 0xfe (38 chars)
+!!! ERROR: chunk "g{yo" appears between IDAT chunks
+!!! ERROR: file truncated inside chunk "g{yo": declared 174484577 bytes, only 71 present
+!!! ANOMALY: chunk "g{yo" appears AFTER IEND - data is hidden here
+[4] 0xd5  g{yo  len=174484577  CRC:n/a  <-- AFTER IEND
+
+======================= PNG Summary =======================
+  Image     : 8 x 8, 8-bit, TrueColor (RGB)
+  Chunks    : 4
+  CRC32     : 1 error(s)
+  ANOMALIES : 1 region(s) of non-PNG data (magenta) - hidden data likely!
+=============================================================

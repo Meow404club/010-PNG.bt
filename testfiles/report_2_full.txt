@@ -1,0 +1,59 @@
+Executing template 'C:\Users\lyubi\Documents\SweetScape\010 Templates\Repository\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\2_full.png'...
+Template executed successfully.
+Executing script 'D:\workspace\010-PNG.bt\test_png.1sc' on 'D:\workspace\010-PNG.bt\testfiles\2_full.png'...
+Template executed successfully.
+Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\2_full.png'...
+==================== PNG Template Report ====================
+[1] 0x8  IHDR  len=13  CRC:ok
+[2] 0x21  gAMA  len=4  CRC:ok
+[3] 0x31  cHRM  len=32  CRC:ok
+[4] 0x5d  sRGB  len=1  CRC:ok
+[5] 0x6a  sBIT  len=3  CRC:ok
+[6] 0x79  pHYs  len=9  CRC:ok
+  [tIME] last modified: 2026-10-19 12:34:56 UTC
+[7] 0x8e  tIME  len=7  CRC:ok
+  [tEXt] Title = CTF template test image
+[8] 0xa1  tEXt  len=29  CRC:ok
+  [tEXt] Comment = Trailing junk after this chunk is a secret
+[9] 0xca  tEXt  len=50  CRC:ok
+  [zTXt] "Secret" = 37 bytes of zlib-compressed text
+      ASCII strings in zTXt:
+        "-(J-.NMQ(I"  @ 0x127 (10 chars)
+        "(Q042"  @ 0x132 (5 chars)
+[10] 0x108  zTXt  len=45  CRC:ok
+  [iTXt] Key [en] = international text here
+[11] 0x141  iTXt  len=36  CRC:ok
+  [iTXt] ZKey [en] = 32 bytes of zlib-compressed text
+      ASCII strings in iTXt:
+        "-(J-.NMQ"  @ 0x18a (8 chars)
+[12] 0x171  iTXt  len=44  CRC:ok
+[13] 0x1a9  PLTE  len=12  CRC:ok
+[14] 0x1c1  tRNS  len=3  CRC:ok
+[15] 0x1d0  bKGD  len=1  CRC:ok
+[16] 0x1dd  hIST  len=8  CRC:ok
+  [sPLT] palette "main" (8-bit, 2 entries)
+[17] 0x1f1  sPLT  len=18  CRC:ok
+  [iCCP] ICC profile "icc" (45 bytes compressed)
+      ASCII strings in iCCP:
+        "LNV(("  @ 0x224 (5 chars)
+        "IUHI,ITH"  @ 0x22d (8 chars)
+        "/R(I-."  @ 0x236 (6 chars)
+[18] 0x20f  iCCP  len=50  CRC:ok
+  [eXIf] 10 bytes of Exif metadata
+      (no printable ASCII strings in eXIf)
+[19] 0x24d  eXIf  len=10  CRC:ok
+[20] 0x263  oFFs  len=9  CRC:ok
+[21] 0x278  sCAL  len=8  CRC:ok
+[22] 0x28c  caNv  len=16  CRC:ok
+[23] 0x2a8  cICP  len=4  CRC:ok
+[24] 0x2b8  mDCv  len=24  CRC:ok
+[25] 0x2dc  cLLi  len=8  CRC:ok
+[26] 0x2f0  IDAT  len=31  CRC:ok
+[27] 0x31b  IEND  len=0  CRC:ok
+
+======================= PNG Summary =======================
+  Image     : 8 x 8, 8-bit, Indexed (palette)
+  Chunks    : 27
+  CRC32     : 0 error(s)
+  Anomalies : none (nothing before the signature or after IEND)
+=============================================================

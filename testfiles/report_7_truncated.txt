@@ -1,0 +1,17 @@
+Executing template 'C:\Users\lyubi\Documents\SweetScape\010 Templates\Repository\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\7_truncated.png'...
+*ERROR Line 332: Template passed end of file at variable 'data'. 
+Executing script 'D:\workspace\010-PNG.bt\test_png.1sc' on 'D:\workspace\010-PNG.bt\testfiles\7_truncated.png'...
+Template executed successfully.
+Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\7_truncated.png'...
+==================== PNG Template Report ====================
+[1] 0x8  IHDR  len=13  CRC:ok
+!!! ERROR: file truncated inside chunk "IDAT": declared 12484 bytes, only 12448 present
+[2] 0x21  IDAT  len=12484  CRC:n/a
+!!! ERROR: IEND chunk is missing (file may be truncated)
+
+======================= PNG Summary =======================
+  Image     : 8 x 8, 8-bit, TrueColor (RGB)
+  Chunks    : 2
+  CRC32     : 1 error(s)
+  Anomalies : none (nothing before the signature or after IEND)
+=============================================================
