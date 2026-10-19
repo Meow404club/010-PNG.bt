@@ -366,7 +366,7 @@ typedef struct {
 
 string readIDAT(local PNG_CHUNK_IDAT &v) {
     local string s;
-    SPrintf(s, "%d bytes of zlib-compressed image data", g_len);
+    SPrintf(s, "%Ld bytes of zlib-compressed image data", g_len);
     return s;
 }
 
@@ -475,7 +475,7 @@ typedef struct {
 string readICCP(local PNG_CHUNK_ICCP &v) {
     local string s;
     if (v.hasProfile)
-        SPrintf(s, "ICC profile \"%s\" (%d bytes, zlib-compressed)",
+        SPrintf(s, "ICC profile \"%s\" (%Ld bytes, zlib-compressed)",
                 v.nameStr, g_len - v.nameLen - 2);
     else
         SPrintf(s, "malformed iCCP (profile name \"%s\" not terminated)", v.nameStr);
@@ -525,7 +525,7 @@ typedef struct {
 string readZTXT(local PNG_CHUNK_ZTXT &v) {
     local string s;
     if (v.hasData)
-        SPrintf(s, "%s = (%d bytes zlib-compressed text)", v.kwStr, g_len - v.kwLen - 2);
+        SPrintf(s, "%s = (%Ld bytes zlib-compressed text)", v.kwStr, g_len - v.kwLen - 2);
     else
         SPrintf(s, "%s (malformed zTXt)", v.kwStr);
     return s;
@@ -760,7 +760,7 @@ typedef struct {
 
 string readEXIF(local PNG_CHUNK_EXIF &v) {
     local string s;
-    SPrintf(s, "%d bytes of Exif (TIFF) metadata", g_len);
+    SPrintf(s, "%Ld bytes of Exif (TIFF) metadata", g_len);
     return s;
 }
 
@@ -921,10 +921,10 @@ typedef struct {
 string readFDAT(local PNG_CHUNK_FDAT &v) {
     local string s;
     if (v.hasSeq)
-        SPrintf(s, "frame seq %d, %d bytes of zlib-compressed data",
+        SPrintf(s, "frame seq %d, %Ld bytes of zlib-compressed data",
                 v.sequence_number, g_len - 4);
     else
-        SPrintf(s, "malformed fdAT (%d bytes)", g_len);
+        SPrintf(s, "malformed fdAT (%Ld bytes)", g_len);
     return s;
 }
 
@@ -937,7 +937,7 @@ typedef struct {
 
 string readUNKNOWN(local PNG_CHUNK_UNKNOWN &v) {
     local string s;
-    SPrintf(s, "%d bytes of data", g_len);
+    SPrintf(s, "%Ld bytes of data", g_len);
     return s;
 }
 
@@ -1366,7 +1366,8 @@ typedef struct {
 
 string readCHUNK(local PNG_CHUNK &c) {
     local string s;
-    SPrintf(s, "%s", SafeName(c.type.cname));
+    local string nm = c.type.cname;      // char[4] member -> string copy
+    SPrintf(s, "%s", nm);
     s += " (";
     s += (c.type.cname[0] & 0x20) ? "ancillary" : "critical";
     s += (c.type.cname[1] & 0x20) ? ", private" : ", public";

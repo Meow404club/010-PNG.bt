@@ -1,19 +1,19 @@
 Template executed successfully.
 Executing template 'D:\workspace\010-PNG.bt\PNG.bt' on 'D:\workspace\010-PNG.bt\testfiles\10_embedded.png'...
 ==================== PNG Template Report ====================
-[1] 0x8  IHDR  len=13  CRC:ok
-[2] 0x21  IDAT  len=156  CRC:ok
-[3] 0xc9  IEND  len=0  CRC:ok
-!!! ANOMALY: Embedded file after IEND - another PNG image - 106 byte(s) at offset 0xd5, this is NOT valid PNG data
-      Recognized as: another PNG image
-      Hex head: 89 50 4E 47 0D 0A 1A 0A 00 00 00 0D 49 48 44 52 00 00 00 04 00 00 00 04 08 02 00 00 00 26 93 09 
-      ASCII strings in Embedded file after IEND - another PNG image:
-        "IHDR"  @ 0xe1 (4 chars)
-        "1IDATx"  @ 0xf9 (6 chars)
-        "IEND"  @ 0x137 (4 chars)
+!!! ANOMALY: Data hidden BEFORE the PNG signature - 213 byte(s) at offset 0x0, this is NOT valid PNG data
+      Hex head: 19 50 4E 47 0D 0A 1A 0A 00 00 00 0D 49 48 44 52 00 00 00 08 00 00 00 08 08 02 00 00 00 4B 6D 29 
+      ASCII strings in Data hidden BEFORE the PNG signature:
+        "IHDR"  @ 0xc (4 chars)
+        "IDATx"  @ 0x25 (5 chars)
+        "s=<A"  @ 0x9f (4 chars)
+        "IEND"  @ 0xcd (4 chars)
+[1] 0xdd  IHDR  len=13  CRC:ok
+[2] 0xf6  IDAT  len=49  CRC:ok
+[3] 0x133  IEND  len=0  CRC:ok
 
 ======================= PNG Summary =======================
-  Image     : 8 x 8, 8-bit, TrueColor (RGB)
+  Image     : 4 x 4, 8-bit, TrueColor (RGB)
   Chunks    : 3
   CRC32     : 0 error(s)
   ANOMALIES : 1 region(s) of non-PNG data (magenta) - hidden data likely!
